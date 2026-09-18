@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Ensure the repo root (containing the `chanakya` package and this `tests`
@@ -13,11 +14,15 @@ import pytest
 
 from chanakya.capability.model import ActionType
 from chanakya.contracts.enums import Classification, RiskCategory
+from chanakya.contracts.investigation_request import InvestigationRequest
 from chanakya.contracts.target import Target
 from chanakya.policy.gateway import EvaluationContext, PolicyGateway
 from chanakya.policy.rules import PolicySet
 from chanakya.registry.models import ApprovalRequirement, OSPrivilege, Status, TargetAccess
 from chanakya.registry.registry import SecurityToolRegistry
+from chanakya.runtime.investigation_manager import InvestigationManager
+from chanakya.runtime.limits import RuntimeExecutionLimits
+from chanakya.runtime.resource_governor import ResourceGovernor
 from chanakya.targets.registry import TargetRegistry
 
 from factories import make_entry, now
@@ -127,3 +132,59 @@ def gateway(registry, target_registry, empty_policy_set):
 @pytest.fixture
 def authorized_context():
     return EvaluationContext(authorized_target_refs=frozenset({"target-local-host-01"}))
+
+
+# -- Phase 3 (Agent Runtime) fixtures ---------------------------------------
+
+
+@pytest.fixture
+def runtime_limits():
+    """Generous but finite limits — every ceiling is a small, deliberately
+    low number so tests can actually exercise "limit exceeded" behavior
+    without looping hundreds of times (docs/AGENT-RUNTIME.md §18)."""
+    return RuntimeExecutionLimits(
+        config_version="1.0.0",
+        max_steps_per_investigation=5,
+        max_tool_calls_per_investigation=5,
+        max_investigation_duration_seconds=3600,
+        default_step_timeout_seconds=15,
+        max_retries_per_step=2,
+        retry_backoff_seconds=1,
+        max_concurrent_investigations=5,
+    )
+
+
+@pytest.fixture
+def resource_governor(runtime_limits):
+    return ResourceGovernor(runtime_limits, clock=lambda: datetime.now(timezone.utc))
+
+
+@pytest.fixture
+def investigation_manager(target_registry, resource_governor):
+    return InvestigationManager(target_registry, resource_governor)
+
+
+@pytest.fixture
+def investigation_manager_factory(target_registry, resource_governor):
+    """For tests that need an InvestigationManager wired to a specific
+    (e.g. shared) AuditEmitter — the plain ``investigation_manager``
+    fixture above always uses the default no-op sink."""
+
+    def _make(**overrides):
+        return InvestigationManager(target_registry, resource_governor, **overrides)
+
+    return _make
+
+
+@pytest.fixture
+def investigation_request():
+    return InvestigationRequest.from_dict(
+        {
+            "investigation_request_id": "inv-req-test-1",
+            "contract_version": "1.0.0",
+            "objective": "Assess this machine for common local misconfigurations",
+            "requested_targets": ["target-local-host-01"],
+            "submitted_by": "test-human",
+            "submitted_at": now(),
+        }
+    )
