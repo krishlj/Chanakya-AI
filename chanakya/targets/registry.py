@@ -30,3 +30,33 @@ class TargetRegistry:
 
     def get(self, target_id: str) -> Optional[Target]:
         return self._by_id.get(target_id)
+
+    def replace(self, target: Target) -> None:
+        """docs/TARGET-MANAGER.md §7 (Phase 4.3 finding F-2) — a
+        controlled revision swap for an *already-registered* ``target_id``,
+        the mirror opposite of ``register()`` (which requires the id NOT
+        to already exist). Used exclusively by ``TargetManager``'s
+        lifecycle-transition methods, never called directly by
+        ``PolicyGateway`` or anything else.
+
+        ``get()``'s signature and behavior are unchanged — a caller
+        (the Gateway included) sees the new revision on its next call,
+        with no new dependency and no widened contract.
+
+        Guards against identity drift under the same ``target_id``: the
+        new revision's ``target_type`` must match the current one exactly
+        (docs/TARGET-MANAGER.md §4 groups ``target_type`` under
+        *identity*, not mutable state) — this is a defense-in-depth check
+        independent of whatever a caller intended, mirroring this
+        codebase's existing pattern of runtime assertions alongside
+        caller-level discipline (e.g. ``PolicyGateway``'s INV-1 check).
+        """
+        current = self._by_id.get(target.target_id)
+        if current is None:
+            raise ValueError(f"cannot replace unregistered target: {target.target_id!r}")
+        if current.target_type != target.target_type:
+            raise ValueError(
+                f"cannot replace target {target.target_id!r}: target_type would change "
+                f"from {current.target_type!r} to {target.target_type!r} (identity drift)"
+            )
+        self._by_id[target.target_id] = target

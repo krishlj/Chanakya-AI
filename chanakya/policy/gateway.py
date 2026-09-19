@@ -20,6 +20,7 @@ from typing import Any, FrozenSet, List, Mapping, Optional
 from chanakya.capability.model import PermissionLevel, derive_permission_level
 from chanakya.contracts.enums import Classification, RiskCategory, Verdict
 from chanakya.contracts.policy_decision import PolicyDecision
+from chanakya.contracts.target import TargetStatus
 from chanakya.contracts.tool_request import MalformedRequestError, ToolRequest
 from chanakya.registry.models import ApprovalRequirement, OSPrivilege, RegistryEntry
 from chanakya.registry.registry import SecurityToolRegistry
@@ -136,12 +137,16 @@ class PolicyGateway:
             return self._deny(request.tool_request_id, reasons.PARAMETER_SCHEMA_VIOLATION, str(exc))
 
         # Step 4 — target scope check (investigation scope AND registration
-        # scope AND supported_target_types).
+        # scope AND supported_target_types AND lifecycle status —
+        # docs/TARGET-MANAGER.md §13/§14, Phase 4.5: a read-only addition to
+        # an existing Target field; TargetManager owns the transition, this
+        # is the Gateway's only reference to it).
         target = self._targets.get(request.target_ref)
         if (
             request.target_ref not in context.authorized_target_refs
             or target is None
             or target.target_type not in entry.supported_target_types
+            or target.status != TargetStatus.AUTHORIZED
         ):
             return self._deny(
                 request.tool_request_id,
