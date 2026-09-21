@@ -153,6 +153,54 @@ class ScriptedAgentProvider:
         return turn
 
 
+class RaisingAgentProvider:
+    """A test double whose ``next_turn`` always raises — used to prove a
+    provider-level failure (timeout, network error, auth failure, or any
+    other exception a real LLM SDK call could raise) never becomes an
+    implicit ``conclude``/``propose_tool_request`` decision, and is
+    handled by the same generic fail-closed backstop
+    (``AgentLoopController.run_turn``'s outer ``except Exception``) every
+    other unexpected Runtime error already uses — never a bespoke
+    provider-specific path (Phase 5.4.1 design: "do not create a second
+    retry architecture")."""
+
+    def __init__(self, exc: BaseException) -> None:
+        self._exc = exc
+        self.assembled_contexts: List[Any] = []
+
+    def next_turn(self, assembled_context: Any) -> dict:
+        self.assembled_contexts.append(assembled_context)
+        raise self._exc
+
+    @property
+    def call_count(self) -> int:
+        return len(self.assembled_contexts)
+
+
+class OversizedOutputAgentProvider:
+    """A test double whose ``next_turn`` returns a structurally VALID
+    ``conclude`` turn carrying a very large ``explanation`` string.
+    Deliberately a ``conclude`` turn, not a ``propose_tool_request`` one
+    — padding a ``tool_request`` would be caught by the Policy Gateway's
+    unrelated, pre-existing parameter-schema validation, which would
+    prove nothing about the claim this double exists to document: that
+    ``AgentTurnOutput.from_dict`` itself performs no size check on the
+    raw provider return value at all, independent of anything the
+    Gateway later does (Phase 5.4.1 design finding — not fixed by this
+    double, only documented by it)."""
+
+    def __init__(self, investigation_id: str, padding_bytes: int) -> None:
+        self._investigation_id = investigation_id
+        self._padding_bytes = padding_bytes
+        self.assembled_contexts: List[Any] = []
+
+    def next_turn(self, assembled_context: Any) -> dict:
+        self.assembled_contexts.append(assembled_context)
+        turn = make_agent_turn_conclude(self._investigation_id)
+        turn["explanation"] = "x" * self._padding_bytes
+        return turn
+
+
 class ScriptedApprovalProvider:
     """A test double standing in for the (not-yet-implemented) Human
     Approval Mechanism/UI layer. Never auto-accepts — it only ever
