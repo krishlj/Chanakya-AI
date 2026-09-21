@@ -1,6 +1,7 @@
 from .approval import ApprovalDecision, ApprovalDecisionValue, ApprovalRequest, ApprovalStatus
 from .audit_event import AuditEvent, AuditEventType, AuditSeverity
 from .enums import SUPPORTED_CONTRACT_VERSIONS, Classification, RiskCategory, Verdict
+from .evidence import Evidence
 from .investigation_context import (
     ALLOWED_INVESTIGATION_TRANSITIONS,
     TERMINAL_INVESTIGATION_STATUSES,
@@ -26,6 +27,7 @@ __all__ = [
     "Target",
     "ToolResult",
     "ToolResultStatus",
+    "Evidence",
     "AuditEvent",
     "AuditEventType",
     "AuditSeverity",
