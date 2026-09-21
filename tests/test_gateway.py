@@ -7,7 +7,7 @@ docs/CAPABILITY-PERMISSION-MODEL.md.
 """
 from __future__ import annotations
 
-from chanakya.contracts.enums import Verdict
+from chanakya.contracts.enums import Classification, Verdict
 from chanakya.policy import reasons
 from chanakya.policy.gateway import EvaluationContext, PolicyGateway
 from chanakya.policy.rules import PolicySet
@@ -222,3 +222,40 @@ def test_rate_limit_rule_triggers_only_after_threshold(registry, target_registry
     decision_over = gw.evaluate(make_request("list_listening_ports", "target-local-host-01"), at_threshold)
     assert decision_over.verdict == Verdict.REQUIRE_APPROVAL
     assert decision_over.matched_rule == "rate-limit-ports"
+
+
+# Phase 5.2.3 — PolicyDecision.classification propagation ---------------------
+#
+# entry.classification is copied onto PolicyDecision.classification inside
+# PolicyGateway._decide (a historical snapshot for a future Evidence Writer,
+# docs/CONTRACTS.md §7) — a pure data-carrying addition, not a second
+# authorization signal. These three tests are the exact coverage the
+# approved Phase 5.2.3 design called for.
+
+
+def test_allow_decision_carries_the_registry_classification(gateway, authorized_context):
+    """1. ALLOW contains the RegistryEntry classification."""
+    request = make_request("list_listening_ports", "target-local-host-01")
+    decision = gateway.evaluate(request, authorized_context)
+    assert decision.verdict == Verdict.ALLOW
+    assert decision.classification == Classification.READ_ONLY
+
+
+def test_require_approval_decision_carries_the_registry_classification(gateway, authorized_context):
+    """2. REQUIRE_APPROVAL contains the RegistryEntry classification."""
+    request = make_request("terminate_process", "target-local-host-01", parameters={"pid": 4821})
+    decision = gateway.evaluate(request, authorized_context)
+    assert decision.verdict == Verdict.REQUIRE_APPROVAL
+    assert decision.classification == Classification.STATE_CHANGING
+
+
+def test_deny_decision_never_exposes_a_classification(gateway, authorized_context):
+    """3. DENY does not expose an unauthorized classification — a denied
+    request was never resolved against a RegistryEntry the way an
+    ALLOW/REQUIRE_APPROVAL decision was (an unknown capability has no
+    RegistryEntry at all), so classification stays None rather than
+    reporting a misleading value."""
+    request = make_request("totally_unregistered_capability", "target-local-host-01")
+    decision = gateway.evaluate(request, authorized_context)
+    assert decision.verdict == Verdict.DENY
+    assert decision.classification is None

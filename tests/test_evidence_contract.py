@@ -288,19 +288,21 @@ def test_policy_decision_is_still_frozen():
         decision.classification = Classification.READ_ONLY
 
 
-def test_policy_gateway_still_never_sets_classification_in_this_phase():
-    """Deliberately deferred per the approved Phase 5.2.1 scope — the
-    Gateway's authorization algorithm is untouched, so neither of the two
-    methods that construct a PolicyDecision (`_decide`/`_deny`) passes
-    `classification=` to it. (`entry.classification` is still read
-    elsewhere in this module for unrelated, pre-existing rule-matching
-    logic — e.g. `find_matching_rules(..., classification=entry.
-    classification, ...)` — which is untouched and out of scope here.)"""
+def test_policy_gateway_decide_now_sets_classification_deny_still_does_not():
+    """Superseded by Phase 5.2.3 (this test originally asserted the
+    opposite, back when the field existed but nothing populated it yet —
+    see the approved Phase 5.2.1 design). `_decide` now populates
+    `classification` from the same `entry` already resolved to produce
+    the verdict (no second Registry lookup); `_deny` still does not,
+    because it never receives `entry` and a DENY never produces Evidence
+    that would need it. Full behavioral coverage (ALLOW/REQUIRE_APPROVAL/
+    DENY against a real Gateway) lives in tests/test_gateway.py; this is
+    the narrower static-source confirmation."""
     import inspect
 
     from chanakya.policy.gateway import PolicyGateway
 
     decide_source = inspect.getsource(PolicyGateway._decide)
     deny_source = inspect.getsource(PolicyGateway._deny)
-    assert "classification=" not in decide_source
+    assert "classification=" in decide_source
     assert "classification=" not in deny_source

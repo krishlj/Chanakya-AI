@@ -268,6 +268,12 @@ class PolicyGateway:
             evaluated_at=_utcnow_iso(),
             risk_category=risk_category,
             notes=notes,
+            # Phase 5.2.3: a historical snapshot only (docs/CONTRACTS.md §7
+            # / chanakya.contracts.policy_decision's own docstring) — never
+            # a second, independent authorization signal. `entry` is the
+            # same RegistryEntry already resolved once, above, to produce
+            # `verdict`; no new Registry lookup is introduced here.
+            classification=entry.classification if entry is not None else None,
         )
 
     def _deny(self, tool_request_id: str, matched_rule: str, reason: str) -> PolicyDecision:

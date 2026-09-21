@@ -36,6 +36,7 @@ from chanakya.contracts.approval import (
     ApprovalStatus,
 )
 from chanakya.contracts.enums import Verdict
+from chanakya.contracts.evidence import Evidence
 from chanakya.contracts.investigation_context import InvestigationContext, InvestigationStatus
 from chanakya.contracts.policy_decision import PolicyDecision
 from chanakya.contracts.tool_request import MalformedRequestError, ToolRequest
@@ -64,6 +65,14 @@ from .timeout_supervisor import TimeoutSupervisor
 from .tool_request_intake import ToolRequestIntake
 
 _CONTRACT_VERSION = "1.0.0"
+
+#: Phase 5.2.3: content_hash/storage_ref are Store-owned (Phase 5.2.2) —
+#: this Runtime never computes a hash or assigns a storage location.
+#: These are only the contract-required non-empty placeholders a real
+#: EvidenceRecorder (chanakya.runtime.evidence.FilesystemEvidenceRecorder)
+#: unconditionally overwrites with its Store's authoritative values before
+#: anything is persisted; a caller must never treat either value as final.
+_PENDING_STORE_ASSIGNMENT = "pending-store-assignment"
 
 #: Investigation states from which a step is still meaningfully "in
 #: progress" — anything else observed mid-pipeline means something else
@@ -589,7 +598,33 @@ class AgentLoopController:
             self._audit.dispatch_completed(investigation_id, tool_result)
 
             try:
-                evidence_id = self._evidence_recorder.record(tool_result)
+                # Phase 5.2.3: assemble the complete Evidence record from
+                # context already in scope — exactly the same identifiers
+                # already used to build DispatchInstruction/audit calls
+                # above, plus the classification snapshot the Policy
+                # Gateway already attached to this exact policy_decision
+                # (chanakya/policy/gateway.py's PolicyGateway._decide —
+                # no second Registry lookup, no re-authorization). Kept
+                # inside this try block deliberately: if Evidence's own
+                # contract validation rejects anything here (e.g. an
+                # unexpectedly absent classification), that failure is an
+                # evidence-recording failure like any other and is handled
+                # identically by the except block below.
+                evidence = Evidence(
+                    evidence_id=str(uuid.uuid4()),
+                    contract_version=_CONTRACT_VERSION,
+                    investigation_id=investigation_id,
+                    step_id=step.step_id,
+                    tool_request_id=tool_result.tool_request_id,
+                    tool_result_id=tool_result.tool_result_id,
+                    target_id=tool_request.target_ref,
+                    capability=tool_result.capability,
+                    recorded_at=self._clock(),
+                    content_hash=_PENDING_STORE_ASSIGNMENT,
+                    storage_ref=_PENDING_STORE_ASSIGNMENT,
+                    classification=policy_decision.classification,
+                )
+                evidence_id = self._evidence_recorder.record(evidence)
             except Exception as exc:
                 # docs/AGENT-RUNTIME.md §9: "the corresponding action is
                 # treated as not having durably happened... the

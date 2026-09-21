@@ -1,35 +1,78 @@
 """Evidence hand-off boundary — docs/AGENT-RUNTIME.md §9.
 
-This is deliberately **not** the real Evidence Store described in
-``ARCHITECTURE.md`` §10 (durable, append-only, tamper-evident, hashed).
-That store is out of scope for Phase 3 Step 3.4. This module only
-defines the boundary a future Evidence Writer implements against, plus a
-minimal in-memory stub so the Agent Loop Controller's "context/evidence
-handoff" step (docs/AGENT-RUNTIME.md's lifecycle diagram) has something
-concrete to call without silently pretending to be that real store.
+Phase 5.2.3: the real, durable Evidence Store now exists
+(``chanakya.evidence.store.EvidenceStore``, Phase 5.2.2). This module
+defines the boundary the Agent Loop Controller calls through —
+``EvidenceRecorder`` — and two implementations: ``StubEvidenceRecorder``
+(unchanged in spirit, still a test/bookkeeping-only double, now updated
+to match the new Protocol signature) and ``FilesystemEvidenceRecorder``
+(new — a thin delegation wrapper over a real ``EvidenceStore``).
+
+``EvidenceRecorder.record`` now takes a complete
+``chanakya.contracts.evidence.Evidence`` object (previously a bare
+``ToolResult``) — the caller (``AgentLoopController._execute_once``)
+assembles it from context it already holds (see that module for exactly
+which fields), the same way it already assembles a ``DispatchInstruction``
+before calling a ``ToolExecutor``. Nothing in this module computes a
+hash, assigns a storage location, or makes any policy/authorization
+decision — those boundaries are unchanged from Phase 5.2.2 and Phase 2
+respectively.
 """
 from __future__ import annotations
 
 import uuid
 from typing import Protocol
 
-from chanakya.contracts.tool_result import ToolResult
+from chanakya.contracts.evidence import Evidence
+from chanakya.evidence.store import EvidenceStore
 
 
 class EvidenceRecorder(Protocol):
-    def record(self, tool_result: ToolResult) -> str:
-        """Returns an evidence_id. A real implementation would also write
-        a full docs/CONTRACTS.md §7 ``Evidence`` record (content_hash,
-        storage_ref, provenance) to an append-only store."""
+    def record(self, evidence: Evidence) -> str:
+        """Persists ``evidence`` and returns its ``evidence_id``. An
+        implementation may replace ``evidence.content_hash``/
+        ``recorded_at``/``storage_ref`` with authoritative values of its
+        own (a real ``EvidenceStore`` always does — see
+        ``FilesystemEvidenceRecorder``); it must never trust the
+        caller-supplied placeholders for those three fields as final."""
         ...
 
 
 class StubEvidenceRecorder:
     """NOT an Evidence Store. Assigns a bookkeeping id only — nothing is
-    persisted, hashed, or made tamper-evident. This is a placeholder for
-    the real Evidence Writer (a later Phase 3 step), used here only so
-    the hand-off boundary itself is exercised end-to-end by this step's
-    tests."""
+    persisted, hashed, or made tamper-evident. Ignores the ``Evidence``
+    object it's given entirely (it still doesn't need any of its fields
+    to do its job); kept for tests/callers that want the hand-off
+    boundary exercised without any real persistence."""
 
-    def record(self, tool_result: ToolResult) -> str:
+    def record(self, evidence: Evidence) -> str:
         return f"stub-evidence-{uuid.uuid4()}"
+
+
+class FilesystemEvidenceRecorder:
+    """The real ``EvidenceRecorder``, backed by a real, durable
+    ``EvidenceStore`` (Phase 5.2.2). A thin delegation wrapper only:
+
+    - accepts an already-assembled ``Evidence`` object
+    - delegates directly to ``EvidenceStore.append()``
+    - returns the persisted (Store-authoritative) ``evidence_id``
+    - computes no hash itself, assigns no ``storage_ref`` itself —
+      ``EvidenceStore`` remains the sole authority for both, exactly as
+      it already is for any other caller of ``append()``
+    - makes no policy decision, performs no authorization, and does not
+      modify ``evidence`` before handing it to the Store
+
+    Any exception ``EvidenceStore.append()`` raises (collision,
+    oversized payload, a filesystem error) propagates unchanged — this
+    class adds no try/except of its own. The caller
+    (``AgentLoopController``) already treats any exception from
+    ``record()`` as an evidence-recording failure and halts the
+    investigation accordingly (docs/AGENT-RUNTIME.md §9); nothing here
+    needs to duplicate that handling.
+    """
+
+    def __init__(self, store: EvidenceStore) -> None:
+        self._store = store
+
+    def record(self, evidence: Evidence) -> str:
+        return self._store.append(evidence).evidence_id
