@@ -109,3 +109,27 @@ class ResourceGovernor:
 
     def tool_call_count(self, investigation_id: str) -> int:
         return self._tool_call_counts.get(investigation_id, 0)
+
+    def check_context_size(self, size_bytes: int) -> None:
+        """Phase 5.5 (RG-INV-1). Raises if the assembled context handed
+        to an AgentProvider would exceed ``max_context_bytes`` —
+        exactly-at-the-limit is allowed, only strictly-greater is
+        rejected, matching the existing ``EvidenceStore.MAX_PAYLOAD_BYTES``
+        boundary convention. Performs no authorization/policy decision —
+        this is a size check only."""
+        if size_bytes > self._limits.max_context_bytes:
+            raise ResourceLimitExceededError(
+                f"assembled context size ({size_bytes} bytes) exceeds "
+                f"max_context_bytes ({self._limits.max_context_bytes})"
+            )
+
+    def check_provider_output_size(self, size_bytes: int) -> None:
+        """Phase 5.5 (RG-INV-2). Raises if a provider's raw turn output
+        would exceed ``max_provider_output_bytes`` — exactly-at-the-limit
+        is allowed, only strictly-greater is rejected. Performs no
+        authorization/policy decision — this is a size check only."""
+        if size_bytes > self._limits.max_provider_output_bytes:
+            raise ResourceLimitExceededError(
+                f"provider output size ({size_bytes} bytes) exceeds "
+                f"max_provider_output_bytes ({self._limits.max_provider_output_bytes})"
+            )

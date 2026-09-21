@@ -41,6 +41,15 @@ class RuntimeExecutionLimits:
     max_concurrent_investigations: int
     approval_expiry_seconds_default: Optional[int] = None
     p4_approval_expiry_action: ApprovalExpiryAction = ApprovalExpiryAction.FAIL_STEP
+    #: Phase 5.5 — Runtime Resource Governance. Ceilings on the canonical
+    #: UTF-8 JSON byte size of, respectively, the assembled context handed
+    #: to an AgentProvider and the raw value it returns from next_turn().
+    #: Real numeric defaults, never None/"unlimited" — the same
+    #: fail-closed-by-construction philosophy every other field on this
+    #: class already follows. Additive: every pre-existing construction
+    #: call site continues to work unchanged with these defaults.
+    max_context_bytes: int = 1_048_576
+    max_provider_output_bytes: int = 65_536
 
     def __post_init__(self) -> None:
         for field_name in (
@@ -50,6 +59,8 @@ class RuntimeExecutionLimits:
             "default_step_timeout_seconds",
             "max_retries_per_step",
             "max_concurrent_investigations",
+            "max_context_bytes",
+            "max_provider_output_bytes",
         ):
             value = getattr(self, field_name)
             if not isinstance(value, int) or isinstance(value, bool) or value <= 0:

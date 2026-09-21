@@ -393,41 +393,38 @@ def test_malicious_content_creates_no_policy_decision_and_executes_nothing(
 
 
 # ===========================================================================
-# 6. Model output size — documenting the current, known absence of a ceiling
+# 6. Model output size — Phase 5.5 enforces the previously-documented gap
 # ===========================================================================
 
 
-def test_provider_output_size_currently_has_no_runtime_level_ceiling(
+def test_provider_output_size_exceeding_the_configured_ceiling_halts(
     investigation_manager, resource_governor, gateway, started_investigation
 ):
-    """DOCUMENTING test, not a security assertion: confirms the Phase
-    5.4.1 design-inspection finding that AgentTurnOutput.from_dict
-    performs no size check on the raw provider return value. A large
-    (but not absurd — kept small enough to run fast and not be fragile)
-    `explanation` string on a `conclude` turn passes through unrejected
-    and the investigation completes normally.
+    """Supersedes the Phase 5.4.3 documenting test of the same underlying
+    scenario (this test previously asserted the ABSENCE of a ceiling —
+    `TurnOutcome.CONCLUDED` — a premise Phase 5.5 deliberately
+    invalidates by implementing `ResourceGovernor.check_provider_output_size`).
+    A provider return value whose canonical JSON size exceeds
+    `RuntimeExecutionLimits.max_provider_output_bytes` (default 65_536)
+    is now rejected BEFORE `AgentTurnOutput.from_dict` ever parses it:
+    `TurnOutcome.HALTED` (RG-INV-2, RG-INV-5), never `CONCLUDED`, and
+    never the Tool Layer.
 
-    This is NOT treated as an authorization bypass: `explanation` is
-    never consulted for any policy/authorization decision (PolicyGateway
-    never reads it, matching its existing 'never reads rationale' rule
-    for ToolRequest) — it is inert text. Closing this gap (a real
-    Runtime-level size ceiling) is explicitly out of this phase's scope,
-    per the Phase 5.4.1 design report's finding, and belongs to future
-    Resource Governance work alongside the existing, still-open
-    RegistryEntry.resource_limits/output_schema wiring gap.
+    `explanation` is still never consulted for any policy/authorization
+    decision (PolicyGateway never reads it) — this test is about size
+    governance, not content trust, which remains Phase 5.4's concern.
     """
-    padding_bytes = 200_000  # large enough to be meaningful, small enough to stay fast/non-fragile
+    padding_bytes = 200_000  # exceeds the 65_536-byte default ceiling
     provider = OversizedOutputAgentProvider(started_investigation.investigation_id, padding_bytes)
     executor = FakeToolExecutor()
     controller = AgentLoopController(investigation_manager, resource_governor, gateway, executor, sleep=no_sleep)
 
     result = controller.run_turn(started_investigation.investigation_id, provider)
 
-    # No ceiling exists today: the oversized explanation is accepted, not
-    # rejected as MALFORMED_TURN or any other error.
-    assert result.outcome == TurnOutcome.CONCLUDED
-    assert started_investigation.status == InvestigationStatus.COMPLETED
-    assert executor.call_count == 0  # a conclude turn never touches the Tool Layer regardless of size
+    assert result.outcome == TurnOutcome.HALTED
+    assert started_investigation.status == InvestigationStatus.HALTED
+    assert executor.call_count == 0  # never reached the Tool Layer
+    assert started_investigation.evidence_refs == ()
 
 
 # ===========================================================================

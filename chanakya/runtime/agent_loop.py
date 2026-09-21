@@ -23,6 +23,7 @@ provider, no real Tool Layer, no bypass of the Policy Gateway.
 """
 from __future__ import annotations
 
+import json
 import time
 import uuid
 from dataclasses import dataclass
@@ -79,6 +80,37 @@ _PENDING_STORE_ASSIGNMENT = "pending-store-assignment"
 #: (an operator cancellation, a resource-limit halt) already ended the
 #: investigation concurrently with this step.
 _IN_PROGRESS_STATUSES = (InvestigationStatus.RUNNING, InvestigationStatus.AWAITING_APPROVAL)
+
+#: Phase 5.5 (RG-INV-3): returned by ``_estimate_size_bytes`` when a
+#: value cannot be safely serialized/measured at all (non-JSON-safe
+#: content, a pathologically deep or circular structure). Deliberately
+#: larger than any realistic ``RuntimeExecutionLimits`` ceiling, so an
+#: unmeasurable value always fails the corresponding size check — never
+#: silently treated as within bounds.
+_UNMEASURABLE_SIZE_BYTES = 2**63
+
+
+def _estimate_size_bytes(value: Any) -> int:
+    """Deterministic, provider-agnostic size estimate for Resource
+    Governance (Phase 5.5): the canonical UTF-8 JSON byte length of
+    ``value`` — never a token count (no LLM tokenizer or SDK dependency,
+    per the approved design), and never anything the value itself could
+    claim about its own size (RG-INV-4 — no provider-supplied size hint
+    is ever consulted; this function always measures the actual
+    serialized bytes). ``default=str`` lets an unusual-but-benign
+    non-JSON-native value (e.g. some object a provider returned) still
+    be measured via its string form rather than aborting outright; a
+    value that STILL cannot be serialized this way (a circular
+    reference, pathological nesting that exhausts the recursion limit,
+    or any other structural failure) returns ``_UNMEASURABLE_SIZE_BYTES``
+    — fail closed, per RG-INV-3, never assumed to be within any limit.
+    """
+    try:
+        return len(
+            json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True, default=str).encode("utf-8")
+        )
+    except (TypeError, ValueError, RecursionError):
+        return _UNMEASURABLE_SIZE_BYTES
 
 
 class AgentProvider(Protocol):
@@ -271,7 +303,40 @@ class AgentLoopController:
         assembled = self._context_assembler.assemble(
             context, capability_catalog=capability_catalog, recent_tool_results=recent_tool_results
         )
+
+        # Phase 5.5 (RG-INV-1): reject an oversized assembled context
+        # BEFORE it is ever handed to the provider — ContextAssembler
+        # itself stays stateless and unaware of any Resource Governance
+        # concern (unmodified); measuring and enforcing is the Runtime's
+        # own job, exactly like every other limit checked in this method.
+        context_size = _estimate_size_bytes(
+            {
+                "instructions": assembled.instructions,
+                "capability_catalog": list(assembled.capability_catalog),
+                "data": [{"source": entry.source, "content": entry.content} for entry in assembled.data],
+            }
+        )
+        try:
+            self._governor.check_context_size(context_size)
+        except ResourceLimitExceededError as exc:
+            self._investigations.halt(
+                investigation_id, reason="max_context_bytes_exceeded", details={"detail": str(exc)}
+            )
+            return TurnResult(outcome=TurnOutcome.HALTED, detail=str(exc))
+
         raw_turn = agent.next_turn(assembled)
+
+        # Phase 5.5 (RG-INV-2): reject an oversized raw provider return
+        # value BEFORE it is parsed into AgentTurnOutput — never
+        # truncated, repaired, or partially interpreted first (RT-INV-5).
+        output_size = _estimate_size_bytes(raw_turn)
+        try:
+            self._governor.check_provider_output_size(output_size)
+        except ResourceLimitExceededError as exc:
+            self._investigations.halt(
+                investigation_id, reason="max_provider_output_bytes_exceeded", details={"detail": str(exc)}
+            )
+            return TurnResult(outcome=TurnOutcome.HALTED, detail=str(exc))
 
         try:
             turn_output = AgentTurnOutput.from_dict(raw_turn)
