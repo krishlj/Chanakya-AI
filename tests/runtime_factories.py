@@ -288,14 +288,16 @@ class RaisingPolicyEvaluator:
 class RaisingEvidenceRecorder:
     """A test double whose ``record`` always raises — used to prove an
     Evidence-recording failure never silently becomes a successfully
-    completed step (docs/AGENT-RUNTIME.md §9)."""
+    completed step (docs/AGENT-RUNTIME.md §9). Signature matches
+    ``chanakya.runtime.evidence.EvidenceRecorder`` (Phase 5.3: ``record``
+    takes an ``Evidence`` object plus an optional payload mapping)."""
 
     def __init__(self, exc: BaseException) -> None:
         self._exc = exc
-        self.calls: List[ToolResult] = []
+        self.calls: List[Any] = []
 
-    def record(self, tool_result: ToolResult) -> str:
-        self.calls.append(tool_result)
+    def record(self, evidence, payload=None) -> str:
+        self.calls.append(evidence)
         raise self._exc
 
 

@@ -6,14 +6,36 @@ Runtime yet — ``chanakya.runtime.evidence.StubEvidenceRecorder`` remains
 the Runtime's evidence hand-off boundary unchanged; Runtime integration
 is Phase 5.2.3. The Store is independently constructible and testable.
 
-Layout (exact directory shape per the approved Phase 5.2.2 design)::
+Layout (extended in Phase 5.3 to add a separate payload object)::
 
     <root>/
         <investigation_id>/
-            <evidence_id>.json
+            <evidence_id>.json                  # metadata (unchanged shape + payload_hash)
+            payloads/
+                <evidence_id>.json               # NEW — the actual ToolResult.output content
 
 ``root`` is supplied by the caller at construction time — never
 hardcoded, never machine-specific.
+
+Phase 5.3 (chained-hash payload design): ``append()`` now takes an
+optional ``payload`` mapping — the actual tool-output content
+(``docs/CONTRACTS.md`` §7 always kept this out of ``Evidence`` itself;
+only ``storage_ref``, a pointer, belongs there). When supplied, the
+Store persists it as a second, sibling JSON file under a fixed
+``payloads/`` subdirectory (never glob-matched by ``list_by_investigation``'s
+top-level ``*.json`` scan — no ambiguity with metadata records),
+computes its own SHA-256 hash, and — critically — includes that hash as
+``Evidence.payload_hash`` in the SAME set of fields ``content_hash`` is
+computed over. This chains the two integrity checks: tampering the
+payload alone is caught by ``get_payload()``'s independent re-hash;
+tampering ``payload_hash`` itself (to match a tampered payload) is
+caught by ``content_hash``'s own existing re-verification. When
+``payload`` is omitted (the default — including every call from before
+Phase 5.3), behavior is byte-for-byte identical to Phase 5.2.2:
+``storage_ref`` points at the metadata file itself, ``payload_hash``
+stays absent from the persisted record and from the hash input (see
+``_evidence_to_dict``), and pre-Phase-5.3 records remain fully
+hash-verifiable without any migration.
 
 Trust boundary (docs/THREAT-MODEL.md T-18/T-20/T-22): this Store is
 trusted control code; every value it is asked to persist — investigation
@@ -81,6 +103,13 @@ from .hashing import canonical_bytes, compute_content_hash
 
 _JSON_SUFFIX = ".json"
 
+#: Phase 5.3 — a fixed, non-attacker-controlled path component; payload
+#: files live under this subdirectory of each investigation directory so
+#: list_by_investigation()'s existing top-level "*.json" glob (unchanged)
+#: never matches them, with zero risk of confusing a payload file for a
+#: metadata record.
+_PAYLOAD_SUBDIR = "payloads"
+
 
 # -- exceptions ---------------------------------------------------------------
 
@@ -118,10 +147,14 @@ class CorruptEvidenceError(EvidenceStoreError):
 
 
 class PayloadTooLargeError(EvidenceStoreError):
-    """Raised by ``append()`` when the canonically-serialized record
-    exceeds ``EvidenceStore.MAX_PAYLOAD_BYTES``. Raised before any
-    filesystem write begins — a rejected append leaves no file, partial
-    or otherwise, at the final path."""
+    """Raised by ``append()`` when either ceiling is exceeded: the
+    canonically-serialized METADATA record against
+    ``EvidenceStore.MAX_PAYLOAD_BYTES`` (unchanged since Phase 5.2.2), or
+    — Phase 5.3 — the canonically-serialized tool-output PAYLOAD against
+    ``EvidenceStore.MAX_PAYLOAD_CONTENT_BYTES``, a separate, independent
+    ceiling. Raised before any filesystem write begins in either case —
+    a rejected append leaves no file, partial or otherwise, at any final
+    path (metadata or payload)."""
 
 
 # -- identifier validation (Step 5 — path safety) ------------------------------
@@ -175,8 +208,18 @@ def _utcnow_iso() -> str:
 def _evidence_to_dict(evidence: Evidence) -> Dict[str, Any]:
     """The full, JSON-serializable representation of ``evidence``,
     including ``content_hash`` — this is what is actually written to
-    disk. Contrast with ``_hashable_dict``, which excludes it."""
-    return {
+    disk. Contrast with ``_hashable_dict``, which excludes it.
+
+    ``payload_hash`` is included ONLY when set (not even as an explicit
+    ``null``) — this is deliberate, not an oversight: it is what makes a
+    payload-less Phase 5.3 record byte-for-byte identical in shape to a
+    pre-Phase-5.3 record, which is what lets old records' content_hash
+    keep re-verifying correctly without any migration (Step 5.3.7). A
+    record that DOES have a payload gets a genuinely different-shaped
+    (15-key, not 14-key) hash input — correctly reflecting that it
+    commits to more than a payload-less record does.
+    """
+    data: Dict[str, Any] = {
         "evidence_id": evidence.evidence_id,
         "contract_version": evidence.contract_version,
         "investigation_id": evidence.investigation_id,
@@ -192,6 +235,9 @@ def _evidence_to_dict(evidence: Evidence) -> Dict[str, Any]:
         "tags": list(evidence.tags),
         "redactions_applied": evidence.redactions_applied,
     }
+    if evidence.payload_hash is not None:
+        data["payload_hash"] = evidence.payload_hash
+    return data
 
 
 def _hashable_dict(evidence: Evidence) -> Dict[str, Any]:
@@ -251,6 +297,10 @@ def _dict_to_evidence(data: Mapping[str, Any]) -> Evidence:
     if redactions_applied is not None and not isinstance(redactions_applied, bool):
         raise CorruptEvidenceError("stored evidence record has a malformed 'redactions_applied' field")
 
+    payload_hash = data.get("payload_hash")
+    if payload_hash is not None and not isinstance(payload_hash, str):
+        raise CorruptEvidenceError("stored evidence record has a malformed 'payload_hash' field")
+
     try:
         return Evidence(
             evidence_id=data["evidence_id"],
@@ -267,6 +317,7 @@ def _dict_to_evidence(data: Mapping[str, Any]) -> Evidence:
             classification=classification,
             tags=tuple(tags),
             redactions_applied=redactions_applied,
+            payload_hash=payload_hash,
         )
     except (TypeError, ValueError) as exc:
         # Evidence.__post_init__ itself rejects a malformed field (e.g. an
@@ -289,9 +340,21 @@ class EvidenceStore:
     #: RegistryEntry.resource_limits is not currently wired into
     #: DispatchInstruction (the Phase 5.1 audit finding this Store
     #: deliberately does not fix — see the approved Phase 5.2.2 design).
-    #: Applied to the full canonically-serialized record (the same bytes
-    #: actually written to disk), checked before any write begins.
+    #: Applied to the full canonically-serialized METADATA record (the
+    #: same bytes actually written to disk), checked before any write
+    #: begins. Unmodified since Phase 5.2.2 — Step 5.3.4 explicitly
+    #: requires this ceiling be preserved, not silently changed.
     MAX_PAYLOAD_BYTES = 65536
+
+    #: Phase 5.3 — a SEPARATE, independent ceiling for the actual
+    #: tool-output PAYLOAD (the content persisted under payloads/),
+    #: distinct from MAX_PAYLOAD_BYTES above. Same starting value and
+    #: same justification (Phase 5.1's one production capability's own
+    #: declared max_output_bytes) — chosen as a conservative default, not
+    #: derived from MAX_PAYLOAD_BYTES, so the two can diverge later
+    #: without any naming ambiguity. Checked before any write begins;
+    #: exceeding it raises PayloadTooLargeError and leaves no file behind.
+    MAX_PAYLOAD_CONTENT_BYTES = 65536
 
     def __init__(self, root: Union[str, Path]) -> None:
         root_path = Path(root)
@@ -331,6 +394,11 @@ class EvidenceStore:
         inv = _validate_identifier(investigation_id, field_name="investigation_id")
         ev = _validate_identifier(evidence_id, field_name="evidence_id")
         return self._safe_path(inv, f"{ev}{_JSON_SUFFIX}")
+
+    def _payload_path(self, investigation_id: str, evidence_id: str) -> Path:
+        inv = _validate_identifier(investigation_id, field_name="investigation_id")
+        ev = _validate_identifier(evidence_id, field_name="evidence_id")
+        return self._safe_path(inv, _PAYLOAD_SUBDIR, f"{ev}{_JSON_SUFFIX}")
 
     def _find_evidence_file(self, evidence_id: str) -> Optional[Path]:
         """``get()``/``exists()``/``verify()`` receive only an
@@ -407,20 +475,34 @@ class EvidenceStore:
 
     # -- public API (Step 3) -----------------------------------------------
 
-    def append(self, evidence: Evidence) -> Evidence:
+    def append(self, evidence: Evidence, payload: Optional[Mapping[str, Any]] = None) -> Evidence:
         """Persists ``evidence`` and returns the authoritative, stored
         record. ``content_hash``, ``recorded_at``, and ``storage_ref`` on
         the RETURNED record are always Store-computed — any values the
         caller supplied for those three fields are discarded, never
         trusted, never persisted.
 
+        ``payload`` (Phase 5.3, optional, default ``None``) is the
+        actual tool-output content (e.g. ``{"output": tool_result.output,
+        "error_message": ..., "raw_output": ..., "warnings": [...]}`` —
+        this Store has no dependency on ``chanakya.contracts.tool_result``
+        and does not care about its exact shape, only that it is a plain,
+        JSON-serializable mapping). When supplied, it is persisted as a
+        separate file, its own SHA-256 hash is computed and stored as
+        ``Evidence.payload_hash`` — chained into ``content_hash`` (see
+        the module docstring) — and ``storage_ref`` points at the
+        payload file. When omitted, behavior is unchanged from Phase
+        5.2.2 exactly: no payload file, ``payload_hash`` stays unset,
+        ``storage_ref`` points at the metadata file itself.
+
         Raises ``InvalidIdentifierError`` if ``investigation_id``/
         ``evidence_id`` aren't safe storage identifiers,
         ``EvidenceIdCollisionError`` if ``evidence_id`` already has a
-        stored record anywhere in this Store, or ``PayloadTooLargeError``
-        if the canonically serialized record exceeds
-        ``MAX_PAYLOAD_BYTES`` — in every case, before any file (temporary
-        or final) is created.
+        stored metadata OR payload record anywhere in this Store, or
+        ``PayloadTooLargeError`` if either the canonically serialized
+        metadata record exceeds ``MAX_PAYLOAD_BYTES`` or the canonically
+        serialized payload exceeds ``MAX_PAYLOAD_CONTENT_BYTES`` — in
+        every case, before any file (temporary or final) is created.
 
         The collision check is global, not scoped to
         ``evidence.investigation_id`` — ``get()``/``exists()``/
@@ -430,27 +512,55 @@ class EvidenceStore:
         within one investigation's directory, for those lookups to be
         unambiguous.
         """
-        final_path = self._record_path(evidence.investigation_id, evidence.evidence_id)
+        if payload is not None and not isinstance(payload, Mapping):
+            raise ValueError("EvidenceStore.append: payload must be a mapping if provided")
+
+        metadata_path = self._record_path(evidence.investigation_id, evidence.evidence_id)
+        payload_path = self._payload_path(evidence.investigation_id, evidence.evidence_id)
 
         identifier = _validate_identifier(evidence.evidence_id, field_name="evidence_id")
         if self._find_evidence_file(identifier) is not None:
             raise EvidenceIdCollisionError(f"evidence_id already exists: {evidence.evidence_id!r}")
+        if payload_path.exists():
+            # An orphaned payload file from a previously failed append()
+            # (metadata write failed after the payload write succeeded —
+            # see the write-ordering note below) must not be silently
+            # reused by a later append() that happens to reuse the same
+            # evidence_id.
+            raise EvidenceIdCollisionError(
+                f"a payload record already exists for evidence_id: {evidence.evidence_id!r}"
+            )
 
-        storage_ref = f"{evidence.investigation_id}/{evidence.evidence_id}{_JSON_SUFFIX}"
         recorded_at = _utcnow_iso()
 
-        # Compute the authoritative hash over every field except
+        payload_hash: Optional[str] = None
+        payload_bytes: Optional[bytes] = None
+        if payload is not None:
+            payload_bytes = canonical_bytes(payload)
+            if len(payload_bytes) > self.MAX_PAYLOAD_CONTENT_BYTES:
+                raise PayloadTooLargeError(
+                    f"evidence payload ({len(payload_bytes)} bytes) exceeds the "
+                    f"{self.MAX_PAYLOAD_CONTENT_BYTES}-byte defensive ceiling; not persisted"
+                )
+            payload_hash = compute_content_hash(payload)
+            storage_ref = f"{evidence.investigation_id}/{_PAYLOAD_SUBDIR}/{evidence.evidence_id}{_JSON_SUFFIX}"
+        else:
+            storage_ref = f"{evidence.investigation_id}/{evidence.evidence_id}{_JSON_SUFFIX}"
+
+        # Compute the authoritative metadata hash over every field except
         # content_hash itself (Step 6/7) — using the final, about-to-be-
-        # persisted values for recorded_at/storage_ref, so the hash
-        # matches exactly what re-verification on read will recompute.
-        provisional = replace(evidence, recorded_at=recorded_at, storage_ref=storage_ref)
+        # persisted values for recorded_at/storage_ref/payload_hash, so
+        # the hash matches exactly what re-verification on read will
+        # recompute. payload_hash being set here (or not) is what chains
+        # payload integrity into content_hash.
+        provisional = replace(evidence, recorded_at=recorded_at, storage_ref=storage_ref, payload_hash=payload_hash)
         content_hash = compute_content_hash(_hashable_dict(provisional))
         final_evidence = replace(provisional, content_hash=content_hash)
 
-        payload_bytes = canonical_bytes(_evidence_to_dict(final_evidence))
-        if len(payload_bytes) > self.MAX_PAYLOAD_BYTES:
+        metadata_bytes = canonical_bytes(_evidence_to_dict(final_evidence))
+        if len(metadata_bytes) > self.MAX_PAYLOAD_BYTES:
             raise PayloadTooLargeError(
-                f"evidence record ({len(payload_bytes)} bytes) exceeds the "
+                f"evidence record ({len(metadata_bytes)} bytes) exceeds the "
                 f"{self.MAX_PAYLOAD_BYTES}-byte defensive ceiling; not persisted"
             )
 
@@ -462,8 +572,30 @@ class EvidenceStore:
         # ("Concurrency") for why a full lock is not implemented here.
         if self._find_evidence_file(identifier) is not None:
             raise EvidenceIdCollisionError(f"evidence_id already exists: {evidence.evidence_id!r}")
+        if payload_path.exists():
+            raise EvidenceIdCollisionError(
+                f"a payload record already exists for evidence_id: {evidence.evidence_id!r}"
+            )
 
-        self._atomic_write(final_path, payload_bytes)
+        # Payload written first, metadata second: an orphaned payload
+        # file with no metadata pointing at it is harmless (caught by
+        # the pre-check above on any later reuse of this evidence_id); a
+        # metadata record whose storage_ref points at a payload file
+        # that was never actually written would be actively misleading.
+        if payload_bytes is not None:
+            payload_path.parent.mkdir(parents=True, exist_ok=True)
+            self._atomic_write(payload_path, payload_bytes)
+            try:
+                self._atomic_write(metadata_path, metadata_bytes)
+            except BaseException:
+                try:
+                    payload_path.unlink(missing_ok=True)
+                except OSError:
+                    pass  # best-effort cleanup only — never mask the original failure
+                raise
+        else:
+            self._atomic_write(metadata_path, metadata_bytes)
+
         return final_evidence
 
     def get(self, evidence_id: str) -> Evidence:
@@ -478,6 +610,53 @@ class EvidenceStore:
         if path is None:
             raise UnknownEvidenceError(f"unknown evidence_id: {evidence_id!r}")
         return self._read_and_verify(path)
+
+    def get_payload(self, evidence_id: str) -> Optional[Mapping[str, Any]]:
+        """Phase 5.3. Returns the payload content for ``evidence_id``, or
+        ``None`` if this record was persisted without one (including
+        every pre-Phase-5.3 record). First calls ``get()`` — which
+        re-verifies the metadata record's own ``content_hash`` and, via
+        the chain, confirms the stored ``payload_hash`` string itself
+        wasn't tampered with — then independently re-hashes the payload
+        FILE's actual bytes and compares against that ``payload_hash``.
+        Raises ``UnknownEvidenceError``/``CorruptEvidenceError`` exactly
+        as ``get()`` does for the metadata half; raises
+        ``CorruptEvidenceError`` additionally if the payload file is
+        missing, unreadable, malformed, or its content no longer matches
+        ``payload_hash`` — tampering the payload file alone, without
+        touching the metadata file, is exactly what this second,
+        independent check catches. Never returns partial/best-effort
+        content."""
+        evidence = self.get(evidence_id)
+        if evidence.payload_hash is None:
+            return None
+
+        path = self._payload_path(evidence.investigation_id, evidence.evidence_id)
+        try:
+            raw_bytes = path.read_bytes()
+        except OSError as exc:
+            raise CorruptEvidenceError(f"unable to read stored evidence payload: {exc}") from exc
+
+        try:
+            text = raw_bytes.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise CorruptEvidenceError(f"stored evidence payload is not valid UTF-8: {exc}") from exc
+
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise CorruptEvidenceError(f"stored evidence payload is not valid JSON: {exc}") from exc
+
+        if not isinstance(payload, Mapping):
+            raise CorruptEvidenceError("stored evidence payload is not a JSON object")
+
+        recomputed = compute_content_hash(payload)
+        if recomputed != evidence.payload_hash:
+            raise CorruptEvidenceError(
+                f"payload_hash mismatch for evidence_id={evidence.evidence_id!r}: "
+                f"stored={evidence.payload_hash!r}, recomputed={recomputed!r}"
+            )
+        return payload
 
     def list_by_investigation(self, investigation_id: str) -> Sequence[Evidence]:
         """Every ``Evidence`` record for ``investigation_id``, ordered
@@ -506,10 +685,12 @@ class EvidenceStore:
         return self._find_evidence_file(identifier) is not None
 
     def verify(self, evidence_id: str) -> bool:
-        """``True`` only if a record exists AND its integrity check
-        passes; ``False`` for missing, malformed, corrupted, or
-        unsafe-identifier ``evidence_id`` values — never raises. Safe to
-        call speculatively. Never modifies the record either way."""
+        """``True`` only if a record exists, its metadata integrity
+        check passes, AND — Phase 5.3 — if it has a payload, that
+        payload's own integrity check also passes; ``False`` for
+        missing, malformed, corrupted, or unsafe-identifier
+        ``evidence_id`` values — never raises. Safe to call
+        speculatively. Never modifies the record either way."""
         try:
             identifier = _validate_identifier(evidence_id, field_name="evidence_id")
         except InvalidIdentifierError:
@@ -518,7 +699,13 @@ class EvidenceStore:
         if path is None:
             return False
         try:
-            self._read_and_verify(path)
+            evidence = self._read_and_verify(path)
         except CorruptEvidenceError:
+            return False
+        if evidence.payload_hash is None:
+            return True
+        try:
+            self.get_payload(identifier)
+        except (UnknownEvidenceError, CorruptEvidenceError):
             return False
         return True

@@ -491,5 +491,11 @@ def test_11_content_hash_is_store_authoritative_not_the_runtime_placeholder(
     assert stored.content_hash != "pending-store-assignment"  # the Runtime's own placeholder, never persisted as-is
     assert _SHA256_PATTERN.match(stored.content_hash)
     assert stored.storage_ref != "pending-store-assignment"
-    assert stored.storage_ref == f"{started_investigation.investigation_id}/{evidence_id}.json"
+    # Phase 5.3: agent_loop.py now always passes a payload on SUCCESS, so
+    # storage_ref correctly points at the separate payload object, not
+    # the metadata record itself (superseding this test's pre-Phase-5.3
+    # assertion, which predated payload persistence entirely).
+    assert stored.storage_ref == f"{started_investigation.investigation_id}/payloads/{evidence_id}.json"
+    assert stored.payload_hash is not None
+    assert _SHA256_PATTERN.match(stored.payload_hash)
     assert evidence_store.verify(evidence_id) is True  # re-verification against the real stored bytes succeeds

@@ -624,7 +624,22 @@ class AgentLoopController:
                     storage_ref=_PENDING_STORE_ASSIGNMENT,
                     classification=policy_decision.classification,
                 )
-                evidence_id = self._evidence_recorder.record(evidence)
+                # Phase 5.3: the actual tool-output content — kept OUT of
+                # the Evidence object itself (docs/CONTRACTS.md §7, still
+                # unmodified) and instead handed alongside it as a plain,
+                # JSON-serializable mapping. Untrusted, tool/target-
+                # originated data, exactly like every other use of
+                # tool_result.* elsewhere in this file (RT-INV-7) — this
+                # is pure data assembly, not hashing or storage; both of
+                # those remain EvidenceStore's exclusive responsibility
+                # (chanakya/evidence/store.py).
+                evidence_payload = {
+                    "output": tool_result.output,
+                    "error_message": tool_result.error_message,
+                    "raw_output": tool_result.raw_output,
+                    "warnings": list(tool_result.warnings),
+                }
+                evidence_id = self._evidence_recorder.record(evidence, evidence_payload)
             except Exception as exc:
                 # docs/AGENT-RUNTIME.md §9: "the corresponding action is
                 # treated as not having durably happened... the

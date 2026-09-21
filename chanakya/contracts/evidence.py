@@ -25,6 +25,21 @@ places it (docs/CONTRACTS.md §7: "content" is not a contract field).
 Every field is treated as opaque data; nothing here executes, parses,
 or interprets a field's content, and no field is intended to carry a
 credential (docs/THREAT-MODEL.md T-20).
+
+``payload_hash`` (Phase 5.3, chained-hash design): an additive, optional
+field — every existing construction call site that omits it continues
+to work unchanged, defaulting to ``None``. When a Store persists a
+separate payload object (the actual ``ToolResult.output``) alongside
+this metadata record, ``payload_hash`` carries that payload's own
+Store-computed integrity hash. Because ``content_hash`` above already
+covers "every field except itself," including ``payload_hash`` in that
+set (once set) cryptographically binds the metadata record to the
+payload it references — this is the chain: tampering with the payload
+alone is caught by re-hashing it against the stored ``payload_hash``;
+tampering with ``payload_hash`` itself is caught by ``content_hash``'s
+own existing re-verification. Like ``content_hash``, this field is
+never authoritative merely because a caller supplied it — only a real
+Evidence Store may assign it (``chanakya.evidence.store.EvidenceStore``).
 """
 from __future__ import annotations
 
@@ -69,6 +84,12 @@ class Evidence:
     classification: Classification
     tags: Sequence[str] = field(default_factory=tuple)
     redactions_applied: Optional[bool] = None
+    #: Phase 5.3 — Store-computed integrity hash of a separately persisted
+    #: payload object (the actual ToolResult.output), chained into
+    #: content_hash above once set. ``None`` when no payload was
+    #: persisted for this record (e.g. every pre-Phase-5.3 record, or any
+    #: record for which no payload was supplied).
+    payload_hash: Optional[str] = None
 
     def __post_init__(self) -> None:
         for field_name in _REQUIRED_STRING_FIELDS:
@@ -87,3 +108,6 @@ class Evidence:
 
         if self.redactions_applied is not None and not isinstance(self.redactions_applied, bool):
             raise ValueError("Evidence.redactions_applied must be a boolean if present")
+
+        if self.payload_hash is not None and (not isinstance(self.payload_hash, str) or not self.payload_hash):
+            raise ValueError("Evidence.payload_hash must be a non-empty string if present")
