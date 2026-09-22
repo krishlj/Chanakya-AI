@@ -3,6 +3,15 @@ name = "chanakya"
 version = "0.2.0"
 description = "Chanakya AI — Phase 2 Security Control Plane (Policy Gateway, Security Tool Registry, Capability/Permission Model)"
 requires-python = ">=3.9"
+dependencies = [
+    # Phase 5.6.2 — official Anthropic Python SDK. A direct runtime
+    # dependency: chanakya/providers/anthropic_provider.py (a later,
+    # not-yet-implemented Phase 5.6 step) will import it directly. Bounded
+    # to the current major version (1.x, current stable at pin time:
+    # 1.7.0) to prevent an unreviewed breaking major-version upgrade from
+    # being silently pulled in.
+    "anthropic>=1.7.0,<2.0",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
