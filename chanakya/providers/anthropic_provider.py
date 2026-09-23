@@ -119,6 +119,14 @@ class AnthropicProvider:
         # `anthropic.Anthropic` instance instead — e.g. one built with a
         # mock HTTP transport in tests, so no real network call is ever
         # made without one being explicitly injected.
+        #
+        # Phase 5.6.6 remediation (LLM-INV-3): the SDK's default HTTP
+        # client follows redirects, and on a cross-origin redirect the
+        # transport strips only `Authorization` — not the `X-Api-Key`
+        # header this SDK authenticates with — and a 307 also re-sends
+        # the request body (investigation data). Redirects are therefore
+        # never followed: a 3xx surfaces as an SDK status error and takes
+        # the Runtime's existing fail-closed provider-failure path.
         self._client = (
             client
             if client is not None
@@ -126,6 +134,10 @@ class AnthropicProvider:
                 api_key=api_key,
                 base_url=config.endpoint,
                 timeout=config.timeout_seconds,
+                http_client=anthropic.DefaultHttpxClient(
+                    follow_redirects=False,
+                    timeout=config.timeout_seconds,
+                ),
             )
         )
 
