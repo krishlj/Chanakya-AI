@@ -1,15 +1,17 @@
-"""Chanakya AI — Phase 5.6.1 Provider Configuration.
+"""Chanakya AI — LLM provider adapters (Phase 5.6+).
 
-Home for real LLM provider adapters (Phase 5.6+). This step (5.6.1)
-implements only the configuration boundary a future provider adapter
-(e.g. an `AnthropicAgentProvider` implementing
-`chanakya.runtime.agent_loop.AgentProvider`) will be constructed from.
+Phase 5.6.1 added the configuration boundary (`ProviderConfig`). Phase
+5.6.3 adds the first real adapter, `AnthropicProvider`, implementing
+`chanakya.runtime.agent_loop.AgentProvider` against the official
+Anthropic SDK — see `anthropic_provider.py`'s module docstring for the
+full security-invariant accounting.
 
-Deliberately NOT implemented yet: any concrete provider adapter, any LLM
-SDK dependency, any network call, any context/response mapping logic
-(`mapping.py`), and any composition/bootstrap module (`bootstrap.py`).
-Each of those is a later, separately-approved Phase 5.6.x step.
+Deliberately NOT implemented yet: any composition/bootstrap module
+(`bootstrap.py`) that resolves `ProviderConfig.api_key_env_var` into a
+raw credential, a multi-provider registry, streaming, or retries. Each
+of those is a later, separately-approved step.
 """
+from .anthropic_provider import AnthropicProvider
 from .config import MAX_TEMPERATURE, MIN_TEMPERATURE, ProviderConfig
 
-__all__ = ["ProviderConfig", "MIN_TEMPERATURE", "MAX_TEMPERATURE"]
+__all__ = ["ProviderConfig", "MIN_TEMPERATURE", "MAX_TEMPERATURE", "AnthropicProvider"]
