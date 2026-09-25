@@ -38,6 +38,7 @@ from chanakya.policy.rules import PolicySet
 from chanakya.registry.bootstrap import (
     OBSERVE_LOCAL_HOST_ENVIRONMENT_CAPABILITY,
     make_observe_local_host_environment_entry,
+    production_registry_entries,
 )
 from chanakya.registry.models import Status
 from chanakya.registry.registry import SecurityToolRegistry
@@ -442,8 +443,9 @@ def test_b2_capability_id_matches_between_registry_and_tool_layer():
     assert OBSERVE_LOCAL_HOST_ENVIRONMENT_CAPABILITY == CAPABILITY_ID
 
 
-def test_b3_tool_executor_bootstrap_matches_exactly_the_registered_capability(registry, tool_executor):
-    enabled = {e.capability for e in registry.list_enabled()}
+def test_b3_tool_executor_bootstrap_matches_exactly_the_registered_capability(tool_executor):
+    production = SecurityToolRegistry(production_registry_entries())
+    enabled = {e.capability for e in production.list_enabled()}
     assert set(tool_executor.registered_capabilities) == enabled
 
 

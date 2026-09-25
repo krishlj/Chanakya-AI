@@ -1023,6 +1023,43 @@ Likelihood/Impact/Risk use: **Low / Medium / High / Critical**.
   with a clear `error_state` rather than an unbounded retry loop.
 - **Residual risk**: Low, once limits are enforced.
 
+### Candidate threats from Phase 8 (`list_listening_ports`)
+
+Candidates for a future revision of this document. They use the
+existing threat terminology; none adds a new trust boundary.
+
+- **T-34 candidate — Host-data over-collection sent to the LLM
+  provider** (TB-2; related to T-22). Listening addresses, ports, PIDs
+  and process names leave the host in model context.
+  *Controls:* a minimal field set; no process arguments or environment;
+  output bounded to 60,000 bytes.
+  *Residual:* this data is visible to the provider by design.
+- **T-35 candidate — Capability output as an injection carrier** (a
+  T-03/T-12 variant). Process names are chosen by whatever runs on the
+  host, for example "ignore previous instructions".
+  *Controls:* output reaches the model only as `UntrustedData` in the
+  data channel; the Gateway, not the model, decides every action;
+  terminal display is escaped (Phase 7). Tests assert hostile names never
+  reach instructions, the catalog, audit details, policy verdicts or
+  approvals.
+- **T-36 candidate — A hanging or unbounded capability** (a T-27
+  variant). The Runtime's step timeout is checked only after a handler
+  returns, so it is not preemptive.
+  *Controls:* the handler makes no blocking calls, no subprocess and no
+  network calls; reads are bounded (16 MiB per table, 5 Windows
+  size-negotiation attempts); output over the limit fails closed.
+  *Residual:* a general preemptive timeout is still missing.
+- **T-37 candidate — Platform-parsing divergence produces misleading
+  evidence** (a T-06/T-07 variant).
+  *Controls:* strict parsers; a malformed row fails the whole call
+  rather than being skipped or guessed; fixture tests cover every table
+  format.
+- **T-38 candidate — Registry/handler drift.** A capability is
+  registered without a handler, or the reverse.
+  *Controls:* the executor returns an error result for an unknown
+  handler; a test asserts that `production_registry_entries()` and
+  `build_tool_executor` expose exactly the same capability set.
+
 ---
 
 ## 9. Security controls (consolidated)

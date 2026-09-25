@@ -183,6 +183,20 @@ MCP is treated as a transport/integration detail within this layer, not
 as a trust boundary — trust decisions were already made upstream by the
 Policy Gateway before dispatch reaches here.
 
+**Status (Phase 8):** two production capabilities, both read-only (P1),
+parameterless and `local_host`-only. Both are wired into
+`chanakya.tools.bootstrap.build_tool_executor` and
+`chanakya.registry.bootstrap.production_registry_entries`:
+
+- `observe_local_host_environment` (Phase 5.1): OS/platform facts.
+- `list_listening_ports` (Phase 8): listening TCP/UDP sockets with owning
+  PID and executable base name.
+
+Both are implemented with the standard library only. They start no
+process, use no shell and send no network traffic. Output is bounded
+and fails closed rather than being truncated. No MCP integration exists
+yet. See `docs/TOOL-REGISTRY.md` "Production capabilities".
+
 ## 9. Security Tool Registry
 
 The catalog of every capability the system knows how to run. Each entry

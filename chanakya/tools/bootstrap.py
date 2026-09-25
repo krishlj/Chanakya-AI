@@ -10,13 +10,18 @@ from __future__ import annotations
 from chanakya.targets.registry import TargetRegistry
 
 from .executor import CapabilityDispatchExecutor
+from .handlers import listening_ports
 from .handlers.local_host_environment import CAPABILITY_ID, LocalHostEnvironmentHandler
 
 
 def build_tool_executor(target_registry: TargetRegistry) -> CapabilityDispatchExecutor:
-    """The Phase 5.1 production ``ToolExecutor``: one capability,
-    ``observe_local_host_environment``, backed by ``LocalHostEnvironmentHandler``."""
+    """The production ``ToolExecutor``: ``observe_local_host_environment``
+    (Phase 5.1) and ``list_listening_ports`` (Phase 8). Must stay in step
+    with ``chanakya.registry.bootstrap.production_registry_entries``."""
     return CapabilityDispatchExecutor(
         target_registry,
-        {CAPABILITY_ID: LocalHostEnvironmentHandler()},
+        {
+            CAPABILITY_ID: LocalHostEnvironmentHandler(),
+            listening_ports.CAPABILITY_ID: listening_ports.ListeningPortsHandler(),
+        },
     )

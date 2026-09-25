@@ -331,6 +331,42 @@ load-time check" pattern for INV-1).
 
 ---
 
+## Production capabilities (implemented)
+
+The design examples below predate the implementation. What is actually
+registered is built by `chanakya.registry.bootstrap.production_registry_entries()`,
+and the matching handlers by `chanakya.tools.bootstrap.build_tool_executor`.
+A test asserts that the two sets are identical.
+
+| Capability | Phase | Level | Parameters | Targets | Handler |
+|---|---|---|---|---|---|
+| `observe_local_host_environment` | 5.1 | P1, read-only, no approval by default | none (closed schema) | `local_host` | `LocalHostEnvironmentHandler` |
+| `list_listening_ports` | 8 | P1, read-only, no approval by default | none (closed schema) | `local_host` | `ListeningPortsHandler` |
+
+`list_listening_ports` follows the example entry below, with these
+differences:
+
+- **Output.** `ports[]` items are `{protocol, port, local_address,
+  pid?, process?}`, with `additionalProperties: false` and optional
+  fields omitted rather than set to null.
+- **Size limit.** `max_output_bytes` is **60,000**, not 262,144, so a
+  successful result always fits the Evidence Store's 65,536-byte payload
+  limit. The handler enforces it: over-limit output is an error result,
+  never a truncated success.
+- **Data sources.**
+  - Linux reads only `/proc/net/{tcp,tcp6,udp,udp6}`, `/proc/<pid>/fd`
+    links and `/proc/<pid>/comm`.
+  - Windows uses `GetExtendedTcpTable`/`GetExtendedUdpTable` through
+    `ctypes`, plus the image name reduced to its base name.
+  - Other platforms return an explicit unsupported-platform error.
+- **Never collected.** No process arguments, no environment, no
+  subprocess, no shell. Strict parsers reject malformed rows instead of
+  skipping them.
+
+The Runtime still does not enforce `resource_limits` generically, and
+it does not validate `output_schema` at run time. Each capability's
+tests validate its output against its registered schema.
+
 ## Example registry entries
 
 **Read-only, core, fully enabled** — consistent with the `ToolRequest`/

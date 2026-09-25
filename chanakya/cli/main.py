@@ -50,7 +50,7 @@ from chanakya.evidence import EvidenceStore
 from chanakya.policy import PolicyGateway, PolicyRule, PolicySet, RuleMatch
 from chanakya.providers.anthropic_provider import AnthropicProvider
 from chanakya.providers.config import ProviderConfig
-from chanakya.registry.bootstrap import make_observe_local_host_environment_entry
+from chanakya.registry.bootstrap import production_registry_entries
 from chanakya.registry.registry import SecurityToolRegistry
 from chanakya.runtime.agent_loop import AgentLoopController, AgentProvider, TurnOutcome, TurnResult
 from chanakya.runtime.audit import AuditEmitter
@@ -157,7 +157,7 @@ def build_runtime(
     workdir = Path(workdir)
     now = utcnow_iso()
 
-    registry = SecurityToolRegistry([make_observe_local_host_environment_entry(now=now)])
+    registry = SecurityToolRegistry(production_registry_entries(now=now))
     target_registry = TargetRegistry([_local_host_target(now)])
     target_manager = TargetManager(target_registry)
     gateway = PolicyGateway(registry, target_registry, _policy_set(require_approval, now))
