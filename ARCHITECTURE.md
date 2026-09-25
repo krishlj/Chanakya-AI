@@ -241,6 +241,15 @@ failed. Distinct from the Evidence Store: Evidence records *what a tool
 observed about the target*; the Audit Log records *what the system itself
 did*, independent of whether any tool ran.
 
+**Status (Phase 6):** implemented as `chanakya.audit.FilesystemAuditLog`,
+a durable sink for the Runtime's existing `AuditEmitter`. Each
+investigation (and a separate system stream) is an append-only, SHA-256
+hash chain of records on the local filesystem. A record that cannot be
+written durably halts the investigation. Tail truncation and a full
+rewrite by a local attacker are not detectable without an external
+anchor. Design, invariants (AL-INV-1..9) and limitations:
+`docs/AGENT-RUNTIME.md` §14.
+
 ## 15. Configuration and Secrets Management
 
 - **Configuration** (policy rules, tool registry definitions, target

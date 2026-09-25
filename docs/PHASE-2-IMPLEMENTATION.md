@@ -210,7 +210,9 @@ of them read `ToolRequest.rationale` or `expected_output_description`.
   `AuditEvent`s is the Agent Runtime's responsibility, not the Gateway's —
   there is no Runtime yet, so no audit trail is produced. Every
   `PolicyDecision` still carries everything a future Runtime needs to
-  build one.
+  build one. *(Superseded: the Runtime has emitted `AuditEvent`s since
+  Phase 3, and Phase 6 added the durable `chanakya.audit.FilesystemAuditLog`;
+  see `docs/AGENT-RUNTIME.md` §14.)*
 - **Minimal schema validator.** `chanakya.policy.schema` supports only the
   subset of JSON Schema used by this phase's examples (`type`,
   `properties`, `required`, `additionalProperties`, `items`, `enum`,

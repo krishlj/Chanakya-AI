@@ -781,6 +781,24 @@ Likelihood/Impact/Risk use: **Low / Medium / High / Critical**.
   attacker with sufficient local privilege; this is inherent to a
   local-filesystem-only Phase 1 design and is explicitly named as a
   residual risk (§9) rather than assumed solved.
+- **Phase 6 status (Audit Log half)**: `chanakya.audit.FilesystemAuditLog`
+  now persists every `AuditEvent` append-only, one SHA-256 hash chain per
+  investigation. Store-owned `sequence`/`previous_record_hash`/
+  `recorded_at`/`record_hash` make a modified, deleted-from-the-middle,
+  reordered or inserted record detectable by `verify()` (AL-INV-3). A write
+  failure halts the investigation (the "Audit Log write failure" row
+  below is now implemented, AL-INV-5). **Still not detected**: tail
+  truncation, a rewritten last record, and a full chain rewrite by an
+  attacker with local write access, because the hash is unkeyed and
+  nothing external anchors the chain head. TB-8 is now concrete: the
+  Runtime only writes, and review reads happen out-of-band; nothing in
+  the Runtime, Gateway or providers reads the log (AL-INV-7). TB-9 is
+  unchanged: the log's integrity and confidentiality still rest on the
+  host. Residual risk is unchanged (**Medium-High** on a compromised
+  host). Audit `details` are now persisted, so T-20 applies to them: a
+  best-effort credential screen and a 64 KiB record limit reject (never
+  truncate) suspect records, which halts the investigation. See
+  `docs/AGENT-RUNTIME.md` §14.
 
 ### T-19 — Fail-open on indeterminate policy decisions
 - **Attack path**: The Policy Gateway encounters an internal error, a
@@ -1212,7 +1230,9 @@ surfaced by this analysis:
    `previous_event_hash` field to `AuditEvent` in a future `CONTRACTS.md`
    revision, so the Audit Log can detect deletion/reordering of events,
    not just per-record modification (addresses part of the T-18 residual
-   risk).
+   risk). *(Phase 6: addressed without a contract change. The hash chain
+   lives in the Audit Log's store-owned record envelope, not in
+   `AuditEvent`; see T-18.)*
 2. **Cumulative/session-level policy rules**: `ARCHITECTURE.md`'s Policy
    Gateway description currently reads naturally as per-request
    evaluation; a future revision could explicitly note that policy rules
