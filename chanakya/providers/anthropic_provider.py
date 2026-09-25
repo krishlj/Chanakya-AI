@@ -148,7 +148,12 @@ class AnthropicProvider:
         turn-shaped result here (LLM-INV-9)."""
         request_kwargs = mapping.build_request_kwargs(assembled_context, self._config)
         response = self._client.messages.create(**request_kwargs)
-        return mapping.response_to_turn_mapping(response, investigation_id=assembled_context.investigation_id)
+        convert = (
+            mapping.response_to_turn_mapping_with_findings
+            if self._config.findings_channel
+            else mapping.response_to_turn_mapping
+        )
+        return convert(response, investigation_id=assembled_context.investigation_id)
 
 
 __all__ = ["AnthropicProvider"]

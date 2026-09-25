@@ -17,9 +17,10 @@ validates it as-is).
 """
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Mapping, Optional
+from typing import Any, Mapping, Optional, Tuple
 
 from chanakya.contracts.enums import SUPPORTED_CONTRACT_VERSIONS
 
@@ -37,6 +38,9 @@ class NextAction(str, Enum):
 
 _REQUIRED_FIELDS = ("turn_id", "contract_version", "investigation_id", "next_action", "produced_at")
 
+#: Phase 9 — the most findings one turn may carry. More is malformed.
+MAX_FINDINGS_PER_TURN = 20
+
 
 @dataclass(frozen=True)
 class AgentTurnOutput:
@@ -47,6 +51,11 @@ class AgentTurnOutput:
     produced_at: str
     tool_request: Optional[Mapping[str, Any]] = None
     explanation: Optional[str] = None
+    #: Phase 9 (docs/AGENT-RUNTIME.md "Additional contracts"): raw,
+    #: model-proposed findings, allowed only with ``conclude``. Structural
+    #: check only; the Agent Loop Controller validates each one and
+    #: resolves its evidence references before anything is stored.
+    findings: Tuple[Mapping[str, Any], ...] = ()
 
     @staticmethod
     def from_dict(data: Mapping[str, Any]) -> "AgentTurnOutput":
@@ -92,6 +101,18 @@ class AgentTurnOutput:
         if explanation is not None and not isinstance(explanation, str):
             raise MalformedAgentTurnOutputError("field 'explanation' must be a string if present")
 
+        findings = data.get("findings")
+        if findings is None:
+            findings = []
+        if not isinstance(findings, list):
+            raise MalformedAgentTurnOutputError("field 'findings' must be a list if present")
+        if findings and next_action != NextAction.CONCLUDE:
+            raise MalformedAgentTurnOutputError("'findings' are only allowed when next_action == conclude")
+        if len(findings) > MAX_FINDINGS_PER_TURN:
+            raise MalformedAgentTurnOutputError(f"more than {MAX_FINDINGS_PER_TURN} findings in one turn")
+        if not all(isinstance(item, Mapping) for item in findings):
+            raise MalformedAgentTurnOutputError("each entry of 'findings' must be an object")
+
         return AgentTurnOutput(
             turn_id=data["turn_id"],
             contract_version=contract_version,
@@ -100,4 +121,5 @@ class AgentTurnOutput:
             produced_at=data["produced_at"],
             tool_request=dict(tool_request) if tool_request is not None else None,
             explanation=explanation,
+            findings=tuple(copy.deepcopy(dict(item)) for item in findings),
         )

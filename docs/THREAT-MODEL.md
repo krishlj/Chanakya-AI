@@ -1060,6 +1060,42 @@ existing threat terminology; none adds a new trust boundary.
   handler; a test asserts that `production_registry_entries()` and
   `build_tool_executor` expose exactly the same capability set.
 
+### Candidate threats from Phase 9 (evidence-grounded findings)
+
+Model-authored findings are persisted durably. This is a new sink on the
+existing TB-3 path, not a new trust boundary.
+
+- **T-39 candidate — Fabricated or unsupported finding.** The model cites
+  evidence that does not exist or belongs to another investigation.
+  *Controls:* citations are resolved only through this investigation's
+  own step history to recorded evidence; anything else makes the turn
+  malformed and stores nothing.
+  *Residual:* a finding can still misinterpret real evidence (T-06/T-07).
+- **T-40 candidate — Finding text as an injection or display carrier.**
+  Title or description carries instructions or terminal escapes.
+  *Controls:* control characters are rejected; the CLI prints every value
+  escaped; findings are never fed back into model context in this phase;
+  nothing reads findings for authorization.
+- **T-41 candidate — Secrets copied from evidence into findings** (T-20).
+  *Controls:* the locator credential patterns plus a free-text
+  `key=`/`key:` pattern and a PEM-header check reject the finding rather
+  than redacting it.
+  *Residual:* best-effort; unstructured secrets are not detected.
+- **T-42 candidate — Finding-store tampering** (T-18).
+  *Controls:* append-only store, exclusive create, per-record content
+  hash re-verified on read, `finding_created` audit events in the
+  hash-chained Audit Log.
+  *Residual:* same as Evidence; a local attacker can rewrite and rehash.
+- **T-43 candidate — Finding treated as authority.** A finding claiming
+  "critical, terminate the process" triggers an action.
+  *Controls:* findings arrive only with `conclude`; the channel never
+  becomes a `tool_request`; the Gateway, approval and dispatch never read
+  findings; tests assert no policy decision or approval results from them.
+- **T-44 candidate — Finding flood.**
+  *Controls:* at most 20 findings per turn and per investigation;
+  bounded title, description and evidence lists; a 16 KiB record limit;
+  the provider-output limit applies to the whole turn.
+
 ---
 
 ## 9. Security controls (consolidated)

@@ -49,7 +49,12 @@ import json
 import uuid
 from typing import Any, Mapping, MutableMapping, Optional
 
-from chanakya.capability.reserved import RESERVED_TARGET_PARAMETER, find_reserved_parameter_declarations
+from chanakya.capability.reserved import (
+    RESERVED_FINDING_TOOL,
+    RESERVED_TARGET_PARAMETER,
+    find_reserved_parameter_declarations,
+    is_reserved_capability_name,
+)
 from chanakya.contracts.enums import SUPPORTED_CONTRACT_VERSIONS
 from chanakya.runtime.clock import utcnow_iso
 from chanakya.runtime.context_assembler import AssembledContext
@@ -107,6 +112,43 @@ _TARGET_REF_DESCRIPTION = (
     "Gateway decides whether the action may run against that target; being listed in "
     "investigation_targets does not mean an action against that target will be allowed."
 )
+
+#: Phase 9: fixed description of the reserved finding channel. It names
+#: what the channel is for and states that it runs nothing.
+_FINDING_TOOL_DESCRIPTION = (
+    "Call this only when you are finished, to end the investigation and report findings. It is not "
+    "an action: it runs nothing, changes nothing and grants nothing. Each finding must cite, in "
+    "evidence_refs, the tool_result ids (the part after 'tool_result:' in an untrusted_data source) "
+    "of the results that support it. Findings are recorded as opinions grounded in that evidence."
+)
+
+_FINDING_TOOL_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "findings": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "maxLength": 200},
+                    "description": {"type": "string", "maxLength": 4000},
+                    "evidence_refs": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 20},
+                    "category": {"type": "string", "pattern": "^[a-z0-9_]{1,64}$"},
+                    "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
+                },
+                "required": ["title", "description", "evidence_refs"],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["findings"],
+    "additionalProperties": False,
+}
+
+#: Returned instead of a usable turn when the model misuses the reserved
+#: channel; ``AgentTurnOutput.from_dict`` rejects it (MALFORMED_TURN).
+_INVALID_RESERVED_USE = "invalid_reserved_tool_use"
 
 #: Phase 5.7.4 — user-message key for the target-context section
 #: (docs/TARGET-AWARE-AGENT-CONTEXT.md §14). A sibling of, never nested
@@ -167,6 +209,10 @@ def build_request_kwargs(assembled_context: AssembledContext, config: ProviderCo
         kwargs["extra_body"] = {"temperature": config.temperature}
 
     tools = [_build_tool_param(entry) for entry in assembled_context.capability_catalog]
+    if getattr(config, "findings_channel", False):
+        tools.append(
+            {"name": RESERVED_FINDING_TOOL, "description": _FINDING_TOOL_DESCRIPTION, "input_schema": _FINDING_TOOL_SCHEMA}
+        )
     if tools:
         kwargs["tools"] = tools
 
@@ -223,6 +269,13 @@ def _build_tool_param(entry: Mapping[str, Any]) -> Mapping[str, Any]:
     ``capability_catalog`` to begin with (this module trusts, but does
     not re-derive, that existing filtering).
     """
+    # Phase 9: a caller-supplied catalog must not shadow the reserved
+    # finding channel.
+    if is_reserved_capability_name(entry.get("capability")):
+        raise ValueError(
+            f"capability name {entry.get('capability')!r} is reserved for the finding channel; "
+            "refusing to build its tool definition"
+        )
     raw_schema = entry.get("parameters_schema")
     # Phase 5.7.5 (F-4): never silently shadow a capability's own
     # declaration of the reserved name — fail closed (no request is sent;
@@ -256,6 +309,20 @@ def _build_tool_param(entry: Mapping[str, Any]) -> Mapping[str, Any]:
 
 
 def response_to_turn_mapping(response: Any, *, investigation_id: str) -> Mapping[str, Any]:
+    """Converts a response with the finding channel disabled. A call to the
+    reserved ``report_findings`` name is never turned into a tool_request;
+    it yields a malformed turn. See ``_response_to_turn`` for the rest."""
+    return _response_to_turn(response, investigation_id=investigation_id, findings_channel=False)
+
+
+def response_to_turn_mapping_with_findings(response: Any, *, investigation_id: str) -> Mapping[str, Any]:
+    """Phase 9. As ``response_to_turn_mapping``, but a lone, well-formed
+    ``report_findings`` call becomes ``next_action: conclude`` with its
+    raw ``findings``. Same inputs: it cannot see the assembled context."""
+    return _response_to_turn(response, investigation_id=investigation_id, findings_channel=True)
+
+
+def _response_to_turn(response: Any, *, investigation_id: str, findings_channel: bool) -> Mapping[str, Any]:
     """Converts an Anthropic ``Message`` response into a plain dict
     matching ``AgentTurnOutput.from_dict``'s expected shape. Returns only
     JSON-plain values (``str``/``dict``/``None``) — no SDK type (a
@@ -269,7 +336,9 @@ def response_to_turn_mapping(response: Any, *, investigation_id: str) -> Mapping
     """
     content = list(getattr(response, "content", None) or [])
 
-    tool_use_block = next((block for block in content if _block_type(block) == "tool_use"), None)
+    tool_use_blocks = [block for block in content if _block_type(block) == "tool_use"]
+    reserved_blocks = [b for b in tool_use_blocks if is_reserved_capability_name(getattr(b, "name", None))]
+    tool_use_block = tool_use_blocks[0] if tool_use_blocks else None
     text_parts = [block.text for block in content if _block_type(block) == "text" and getattr(block, "text", None)]
     explanation: Optional[str] = "\n".join(text_parts) if text_parts else None
 
@@ -279,6 +348,27 @@ def response_to_turn_mapping(response: Any, *, investigation_id: str) -> Mapping
         "investigation_id": investigation_id,
         "produced_at": utcnow_iso(),
     }
+
+    if reserved_blocks:
+        # Phase 9: the finding channel never becomes a tool_request. It is
+        # accepted only when enabled and when it is the one tool call in
+        # the response; any other use is made malformed on purpose.
+        block = reserved_blocks[0]
+        raw_input = getattr(block, "input", None)
+        if (
+            not findings_channel
+            or len(tool_use_blocks) != 1
+            or getattr(block, "name", None) != RESERVED_FINDING_TOOL
+            or not isinstance(raw_input, Mapping)
+            or set(raw_input) != {"findings"}
+        ):
+            turn["next_action"] = _INVALID_RESERVED_USE
+            return turn
+        turn["next_action"] = "conclude"
+        turn["findings"] = raw_input["findings"]
+        if explanation:
+            turn["explanation"] = explanation
+        return turn
 
     if tool_use_block is not None:
         turn["next_action"] = "propose_tool_request"
@@ -335,4 +425,4 @@ def _build_tool_request(tool_use_block: Any, *, investigation_id: str) -> Mappin
     return tool_request
 
 
-__all__ = ["build_request_kwargs", "response_to_turn_mapping"]
+__all__ = ["build_request_kwargs", "response_to_turn_mapping", "response_to_turn_mapping_with_findings"]

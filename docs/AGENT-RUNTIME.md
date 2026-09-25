@@ -1299,6 +1299,65 @@ unrecognized `contract_version`, is malformed — treated exactly like a
 malformed `ToolRequest` (§4, §11): surfaced, never repaired by the
 Runtime.
 
+#### Evidence-grounded findings (Phase 9)
+
+Implemented: `AgentTurnOutput.findings`. It is allowed **only with
+`conclude`** (at most 20 per turn). `recommendations` is still not
+implemented.
+
+**Validation order.** On a conclude turn that carries findings, the Agent
+Loop Controller:
+1. validates **every** proposed finding and resolves its references
+   before storing any;
+2. stores each one (`FindingRecorder`, e.g. `chanakya.findings.FindingStore`);
+3. calls `add_finding_ref`;
+4. emits `finding_created`, whose `related_ids` hold the finding id and
+   whose `details` hold only its evidence ids, never its text;
+5. completes the investigation.
+
+**Evidence references.** The Agent cites the `tool_result_id`s it saw as
+`untrusted_data` sources. Each one must map, through this investigation's
+own step history, to an `evidence_id` in `InvestigationContext.evidence_refs`.
+
+**Outcomes:**
+- Any invalid finding produces `MALFORMED_TURN`. Nothing is stored and
+  the investigation keeps running. Invalid includes: an unknown, foreign
+  or unrecorded reference; a missing or extra field (for example
+  `approved`, `severity`, `target_ref`); credential-shaped or control
+  characters; over-long text; more than 20 findings.
+- Findings reported with no recorder configured fail the investigation
+  (`finding_store_unavailable`); they are never dropped.
+- A storage failure halts it (`finding_recording_failed`).
+
+**Provider channel.** The finding channel is a Runtime-reserved,
+non-dispatchable tool name, `report_findings`
+(`chanakya.capability.reserved.RESERVED_FINDING_TOOL`).
+- **Registry.** It refuses that name for any capability, in any letter
+  case; the provider also refuses to build a caller-supplied catalog tool
+  with it.
+- **When enabled** (`ProviderConfig.findings_channel`, off by default and
+  on in the CLI), the provider offers it with a fixed description and a
+  closed schema that has no `target_ref`. A lone, well-formed call becomes
+  `next_action: conclude` plus `findings`.
+- **Otherwise.** Any other use of the name yields a malformed turn and
+  never a `tool_request`. That covers: the channel being disabled, the
+  call mixed with a capability call, a wrong input shape, or a case
+  variant of the name.
+- **Scope.** It never reaches ToolRequestIntake, the Policy Gateway,
+  approval, the Dispatcher or a ToolExecutor.
+
+| ID | Invariant | Tests (`tests/test_findings.py`) |
+|---|---|---|
+| FND-INV-1 | Findings never reach Intake, the Gateway, approval or dispatch. | `test_findings_never_reach_the_gateway_intake_or_executor`, `test_runtime_finding_path_calls_no_intake_policy_approval_or_dispatch`, `test_channel_disabled_reserved_call_never_becomes_a_tool_request` |
+| FND-INV-2 | Every stored finding cites Evidence of its own investigation, resolved from tool results the Agent saw. | `test_finding_citing_a_seen_tool_result_is_stored_and_audited`, `test_foreign_investigation_tool_results_do_not_resolve`, `test_evidence_ids_cannot_be_cited_directly` |
+| FND-INV-3 | Invalid findings fail closed; a batch is all-or-nothing. | `test_invalid_findings_fail_closed_and_nothing_is_stored` |
+| FND-INV-4 | Credential-shaped finding text is rejected, never repaired. | `test_credential_shaped_text_is_rejected_not_repaired` |
+| FND-INV-5 | Finding storage is append-only and hash-verified. | `test_store_has_no_mutation_api`, `test_collision_fails_and_never_overwrites`, `test_tampered_record_is_detected` |
+| FND-INV-6 | Valid findings are never silently dropped. | `test_findings_without_a_store_fail_instead_of_being_dropped`, `test_store_failure_halts_instead_of_completing` |
+| FND-INV-7 | Every stored finding has a `finding_created` audit event carrying ids only. | `test_finding_citing_a_seen_tool_result_is_stored_and_audited` |
+| FND-INV-8 | Finding text shown in the terminal is escaped. | `test_cli_hostile_finding_text_is_inert_and_escaped` |
+| FND-INV-9 | No capability can take the reserved channel name. | `test_registry_refuses_the_reserved_name`, `test_caller_supplied_catalog_cannot_shadow_the_channel` |
+
 **`RuntimeExecutionLimits`** — admin-controlled configuration (trusted,
 versioned, not Agent-writable), analogous to `PolicySet`.
 

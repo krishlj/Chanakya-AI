@@ -265,3 +265,17 @@ class AuditEmitter:
             investigation_id=investigation_id,
             related_ids={"evidence_id": evidence_id, "tool_result_id": tool_result_id},
         )
+
+    def finding_created(
+        self, investigation_id: str, finding_id: str, evidence_refs, *, actor: str = "agent"
+    ) -> AuditEvent:
+        """Phase 9. Records that a Finding was stored. Carries ids only,
+        never the Finding's text (docs/CONTRACTS.md §13: reference, don't
+        duplicate)."""
+        return self._emit(
+            AuditEventType.FINDING_CREATED,
+            actor=actor,
+            investigation_id=investigation_id,
+            related_ids={"finding_id": finding_id},
+            details={"evidence_refs": list(evidence_refs)},
+        )

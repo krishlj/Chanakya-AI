@@ -38,6 +38,20 @@ RESERVED_TARGET_PARAMETER = "target_ref"
 #: All names no capability ``parameters_schema`` may declare.
 RESERVED_PARAMETER_NAMES = frozenset({RESERVED_TARGET_PARAMETER})
 
+#: Phase 9: name of the Runtime-reserved, non-dispatchable channel through
+#: which the Agent reports Findings when it concludes. It is not a
+#: capability: a provider maps it to a conclude turn, so it never reaches
+#: Intake, the Policy Gateway, dispatch or a ToolExecutor.
+RESERVED_FINDING_TOOL = "report_findings"
+
+#: Names no capability may be registered under (compared case-insensitively).
+RESERVED_CAPABILITY_NAMES = frozenset({RESERVED_FINDING_TOOL})
+
+
+def is_reserved_capability_name(name: Any) -> bool:
+    """True if ``name`` equals a reserved capability name, ignoring case."""
+    return isinstance(name, str) and name.casefold() in {n.casefold() for n in RESERVED_CAPABILITY_NAMES}
+
 
 def _walk(node: Any, path: str) -> Iterator[str]:
     if isinstance(node, Mapping):
@@ -104,6 +118,9 @@ def find_root_schema_violations(schema: Any) -> List[str]:
 __all__ = [
     "RESERVED_TARGET_PARAMETER",
     "RESERVED_PARAMETER_NAMES",
+    "RESERVED_FINDING_TOOL",
+    "RESERVED_CAPABILITY_NAMES",
+    "is_reserved_capability_name",
     "ROOT_SCHEMA_ALLOWED_KEYWORDS",
     "find_reserved_parameter_declarations",
     "find_root_schema_violations",

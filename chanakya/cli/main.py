@@ -47,6 +47,7 @@ from chanakya.contracts.investigation_context import InvestigationContext
 from chanakya.contracts.investigation_request import InvestigationRequest
 from chanakya.contracts.target import Target, TargetStatus
 from chanakya.evidence import EvidenceStore
+from chanakya.findings import FindingStore
 from chanakya.policy import PolicyGateway, PolicyRule, PolicySet, RuleMatch
 from chanakya.providers.anthropic_provider import AnthropicProvider
 from chanakya.providers.config import ProviderConfig
@@ -76,6 +77,12 @@ EXIT_CONFIG_ERROR = 2
 EXIT_INTERRUPTED = 130
 
 
+def _safe_full(value: Any) -> str:
+    """Like ``_safe`` but never shortened (finding descriptions are bounded
+    at 4000 characters by the Finding contract)."""
+    return json.dumps(value, ensure_ascii=True, default=repr)
+
+
 def _safe(value: Any) -> str:
     """Terminal-safe rendering of a value that may carry untrusted text."""
     text = json.dumps(value, ensure_ascii=True, default=repr)
@@ -93,6 +100,7 @@ class CliRuntime:
     audit: AuditEmitter
     audit_log: FilesystemAuditLog
     evidence_store: EvidenceStore
+    finding_store: FindingStore
     approval_provider: TerminalApprovalProvider
     target_id: str
     approver: str
@@ -164,6 +172,7 @@ def build_runtime(
     executor = build_tool_executor(target_registry)
 
     evidence_store = EvidenceStore(workdir / "evidence")
+    finding_store = FindingStore(workdir / "findings")
     audit_log = FilesystemAuditLog(workdir / "audit")
     audit = AuditEmitter(audit_log)
 
@@ -179,6 +188,7 @@ def build_runtime(
         evidence_recorder=FilesystemEvidenceRecorder(evidence_store),
         audit=audit,
         target_context_source=target_manager,
+        finding_recorder=finding_store,
     )
     return CliRuntime(
         registry=registry,
@@ -188,6 +198,7 @@ def build_runtime(
         audit=audit,
         audit_log=audit_log,
         evidence_store=evidence_store,
+        finding_store=finding_store,
         approval_provider=approval_provider,
         target_id=LOCAL_TARGET_ID,
         approver=approval_provider.approver,
@@ -265,8 +276,23 @@ def run_investigation(
         + (f" (reason: {_safe(reason)})" if reason else "")
         + f"\nevidence records: {len(context.evidence_refs)}\n"
     )
+    _report_findings(output, runtime.finding_store, context.investigation_id)
     output.flush()
     return context, interrupted
+
+
+def _report_findings(output: TextIO, store: FindingStore, investigation_id: str) -> None:
+    """Shows the stored, verified findings. All finding text is model-
+    authored and untrusted, so every value is rendered escaped."""
+    findings = store.list_by_investigation(investigation_id)
+    output.write(f"findings: {len(findings)} (agent opinions grounded in evidence; not verified facts)\n")
+    for number, finding in enumerate(findings, start=1):
+        output.write(
+            f"  [{number}] {_safe(finding.title)}\n"
+            f"      confidence: {_safe(finding.confidence)}  category: {_safe(finding.category)}\n"
+            f"      evidence: {_safe(list(finding.evidence_refs))}\n"
+            f"      {_safe_full(finding.description)}\n"
+        )
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -301,7 +327,13 @@ def main(
         except Exception:
             approver = ""
 
-    config = ProviderConfig(provider="anthropic", model=args.model, api_key_env_var=API_KEY_ENV_VAR, timeout_seconds=60.0)
+    config = ProviderConfig(
+        provider="anthropic",
+        model=args.model,
+        api_key_env_var=API_KEY_ENV_VAR,
+        timeout_seconds=60.0,
+        findings_channel=True,
+    )
     api_key = environ.get(config.api_key_env_var)  # the only read of the credential
     if not api_key:
         output.write(f"error: environment variable {config.api_key_env_var} is not set\n")

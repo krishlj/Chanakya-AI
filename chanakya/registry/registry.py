@@ -15,6 +15,7 @@ from chanakya.capability.reserved import (
     ROOT_SCHEMA_ALLOWED_KEYWORDS,
     find_reserved_parameter_declarations,
     find_root_schema_violations,
+    is_reserved_capability_name,
 )
 
 from .exceptions import RegistryAdmissionError
@@ -46,6 +47,12 @@ class SecurityToolRegistry:
             self.register(entry)
 
     def register(self, entry: RegistryEntry) -> None:
+        # Phase 9: the finding channel's name is Runtime-reserved; no
+        # capability may take it, in any status or letter case.
+        if is_reserved_capability_name(entry.capability):
+            raise RegistryAdmissionError(
+                f"capability name {entry.capability!r} is reserved by the Runtime for reporting findings"
+            )
         # Phase 5.7.5 (docs/TARGET-AWARE-AGENT-CONTEXT.md §15, F-4):
         # ``target_ref`` is Runtime-reserved — it is how the Agent proposes a
         # target, validated by Intake and authorized only by the Policy

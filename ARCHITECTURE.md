@@ -243,6 +243,23 @@ distinguishing "what should I do next" (planning) from "what does this
 evidence mean" (analysis) keeps the Agent's prompt/context concerns
 separable.
 
+**Status (Phase 9):** evidence-grounded `Finding`s are implemented.
+- **How they arrive.** When the Agent concludes, it may report findings
+  through a Runtime-reserved, non-dispatchable `report_findings` channel.
+  This is not a capability: the provider turns it into a conclude turn,
+  so it never reaches Intake, the Policy Gateway, approval or dispatch.
+- **Evidence.** Each finding must cite the `tool_result` ids the Agent was
+  shown. The Runtime resolves them to Evidence of the same investigation
+  and rejects anything it cannot resolve.
+- **Storage and display.** Valid findings are stored append-only with a
+  content hash (`chanakya.findings.FindingStore`), recorded as
+  `finding_created` audit events, and shown escaped by the CLI.
+- **Authority.** Findings are opinions: they authorize and trigger
+  nothing.
+
+The Risk Engine (§11) and Recommendations are not implemented. See
+`docs/AGENT-RUNTIME.md` "Evidence-grounded findings (Phase 9)".
+
 ## 13. Human Approval Mechanism
 
 The only mechanism that can convert a `require_approval` `PolicyDecision`

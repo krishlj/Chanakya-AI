@@ -29,7 +29,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Callable, Mapping, Optional, Protocol, Sequence
+from typing import Any, Callable, Mapping, Optional, Protocol, Sequence, Tuple
 
 from chanakya.contracts.approval import (
     ApprovalDecision,
@@ -40,6 +40,7 @@ from chanakya.contracts.approval import (
 from chanakya.contracts.enums import Verdict
 from chanakya.contracts.evidence import Evidence
 from chanakya.contracts.investigation_context import InvestigationContext, InvestigationStatus
+from chanakya.contracts.finding import Finding, FindingValidationError
 from chanakya.contracts.policy_decision import PolicyDecision
 from chanakya.contracts.tool_request import MalformedRequestError, ToolRequest
 from chanakya.contracts.tool_result import ToolResult, ToolResultStatus
@@ -178,6 +179,21 @@ class ApprovalProvider(Protocol):
         ...
 
 
+class FindingRecorder(Protocol):
+    """Phase 9. Durable, append-only Finding storage
+    (``chanakya.findings.FindingStore`` satisfies this)."""
+
+    def append(self, finding: Finding) -> None:
+        ...
+
+
+#: Phase 9: the most findings one investigation may record.
+MAX_FINDINGS_PER_INVESTIGATION = 20
+
+_FINDING_FIELDS = frozenset({"title", "description", "evidence_refs", "category", "confidence"})
+_FINDING_REQUIRED = frozenset({"title", "description", "evidence_refs"})
+
+
 class TurnOutcome(str, Enum):
     CONCLUDED = "concluded"
     STEP_COMPLETED = "step_completed"
@@ -229,6 +245,7 @@ class AgentLoopController:
         audit: Optional[AuditEmitter] = None,
         target_context_source: Optional[TargetContextSource] = None,
         environment_context_source: Optional[EnvironmentContextSource] = None,
+        finding_recorder: Optional[FindingRecorder] = None,
         clock=utcnow_iso,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
@@ -251,6 +268,9 @@ class AgentLoopController:
         # once per turn (fresh, never cached). Never passed to the Policy
         # Gateway, never used to fill a target_ref.
         self._environment_context_source = environment_context_source
+        # Phase 9: optional. With None, a conclude turn that carries
+        # findings fails the investigation instead of dropping them.
+        self._finding_recorder = finding_recorder
         self._clock = clock
         self._sleep = sleep
 
@@ -472,10 +492,106 @@ class AgentLoopController:
             return TurnResult(outcome=TurnOutcome.MALFORMED_TURN, detail=str(exc))
 
         if turn_output.next_action == NextAction.CONCLUDE:
+            if turn_output.findings:
+                ended = self._record_findings(investigation_id, context, turn_output.findings)
+                if ended is not None:
+                    return ended
             self._investigations.complete(investigation_id)
             return TurnResult(outcome=TurnOutcome.CONCLUDED)
 
         return self._handle_tool_request_turn(investigation_id, context, turn_output)
+
+    # -- Phase 9: evidence-grounded findings (conclude turns only) ---------
+
+    def _record_findings(
+        self, investigation_id: str, context: InvestigationContext, raw_findings: Sequence[Mapping[str, Any]]
+    ) -> Optional[TurnResult]:
+        """Validates every proposed finding and resolves its evidence
+        references before storing any of them. Returns ``None`` when all
+        were stored (the caller then completes the investigation), or the
+        ``TurnResult`` that ends this turn instead.
+
+        Findings never reach Intake, the Policy Gateway, approval or
+        dispatch; nothing here can authorize or trigger an action."""
+        if self._finding_recorder is None:
+            # Never silently drop findings the Agent reported.
+            self._investigations.fail(
+                investigation_id, reason="finding_store_unavailable", details={"finding_count": len(raw_findings)}
+            )
+            return TurnResult(outcome=TurnOutcome.FAILED, detail="findings reported but no finding store is configured")
+        try:
+            findings = self._build_findings(investigation_id, context, raw_findings)
+        except FindingValidationError as exc:
+            # Model-caused: nothing stored, investigation keeps running.
+            return TurnResult(outcome=TurnOutcome.MALFORMED_TURN, detail=str(exc))
+
+        for finding in findings:
+            try:
+                self._finding_recorder.append(finding)
+            except Exception as exc:
+                # Same posture as an Evidence write failure: halt rather
+                # than complete with an unrecorded conclusion.
+                self._investigations.halt(
+                    investigation_id,
+                    reason="finding_recording_failed",
+                    details={"detail": str(exc), "type": exc.__class__.__name__},
+                )
+                return TurnResult(outcome=TurnOutcome.HALTED, detail=str(exc))
+            context.add_finding_ref(finding.finding_id)
+            self._audit.finding_created(investigation_id, finding.finding_id, finding.evidence_refs)
+        return None
+
+    def _build_findings(
+        self, investigation_id: str, context: InvestigationContext, raw_findings: Sequence[Mapping[str, Any]]
+    ) -> Tuple[Finding, ...]:
+        """Evidence references are the ``tool_result_id`` values the model
+        was shown. Each must resolve, through this investigation's own step
+        history, to Evidence recorded for this investigation. An unknown,
+        foreign or unrecorded reference fails the whole batch."""
+        if len(context.finding_refs) + len(raw_findings) > MAX_FINDINGS_PER_INVESTIGATION:
+            raise FindingValidationError(f"more than {MAX_FINDINGS_PER_INVESTIGATION} findings for one investigation")
+        recorded = set(context.evidence_refs)
+        evidence_by_result = {
+            step.tool_result_id: step.evidence_id
+            for step in context.step_history
+            if step.tool_result_id and step.evidence_id and step.evidence_id in recorded
+        }
+        findings = []
+        for index, raw in enumerate(raw_findings, start=1):
+            keys = set(raw)
+            if not keys <= _FINDING_FIELDS or not _FINDING_REQUIRED <= keys:
+                raise FindingValidationError(
+                    f"finding {index} must have title, description and evidence_refs, and only {sorted(_FINDING_FIELDS)}"
+                )
+            refs = raw["evidence_refs"]
+            if not isinstance(refs, list) or not refs or not all(isinstance(r, str) and r for r in refs):
+                raise FindingValidationError(f"finding {index}: evidence_refs must be a non-empty list of strings")
+            evidence_refs = []
+            for ref in refs:
+                evidence_id = evidence_by_result.get(ref)
+                if evidence_id is None:
+                    raise FindingValidationError(
+                        f"finding {index} cites a tool result with no recorded evidence in this investigation"
+                    )
+                evidence_refs.append(evidence_id)
+            try:
+                findings.append(
+                    Finding(
+                        finding_id=str(uuid.uuid4()),
+                        contract_version=_CONTRACT_VERSION,
+                        investigation_id=investigation_id,
+                        title=raw["title"],
+                        description=raw["description"],
+                        evidence_refs=tuple(evidence_refs),
+                        created_at=self._clock(),
+                        created_by="agent",
+                        category=raw.get("category"),
+                        confidence=raw.get("confidence"),
+                    )
+                )
+            except FindingValidationError as exc:
+                raise FindingValidationError(f"finding {index}: {exc}") from None
+        return tuple(findings)
 
     # -- ToolRequest -> intake -> policy -> (approval) -> dispatch, with bounded retry --
 

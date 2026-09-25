@@ -94,6 +94,10 @@ class ProviderConfig:
     endpoint: Optional[str] = None
     max_output_tokens: Optional[int] = None
     temperature: Optional[float] = None
+    #: Phase 9: offer the Agent the reserved, non-dispatchable
+    #: ``report_findings`` channel. Off by default, so requests are
+    #: unchanged unless a composition root enables it.
+    findings_channel: bool = False
 
     def __post_init__(self) -> None:
         for field_name in ("provider", "model", "api_key_env_var"):
@@ -122,6 +126,9 @@ class ProviderConfig:
                 or self.max_output_tokens <= 0
             ):
                 raise ValueError("ProviderConfig.max_output_tokens must be a positive integer if present")
+
+        if not isinstance(self.findings_channel, bool):
+            raise ValueError("ProviderConfig.findings_channel must be a bool")
 
         if self.temperature is not None:
             if isinstance(self.temperature, bool) or not isinstance(self.temperature, (int, float)):

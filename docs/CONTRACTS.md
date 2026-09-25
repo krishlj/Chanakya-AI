@@ -481,6 +481,20 @@ it must always be traceable to the evidence that supports it.
   existing `Evidence` record — **a finding with no supporting evidence is
   invalid and must be rejected.**
 
+**Implementation (Phase 9):** `chanakya/contracts/finding.py`.
+- **Fields.** As specified above. The Runtime sets `finding_id`,
+  `investigation_id`, `created_at` and `created_by` (`agent`); the model
+  supplies only `title`, `description`, `category`, `confidence` and its
+  evidence citations.
+- **Evidence.** `evidence_refs` holds the resolved `evidence_id`s: the
+  model cites `tool_result_id`s, and the Runtime maps them through this
+  investigation's own steps.
+- **Additional limits.** Title: one line, at most 200 characters.
+  Description: at most 4000 characters, no control characters except
+  newline and tab. `category` matches `[a-z0-9_]{1,64}`. At most 20
+  distinct `evidence_refs`.
+- **Credential screen.** Best-effort; it rejects rather than redacts.
+
 **Security considerations**
 - `title`/`description` are Agent-generated text; every consumer must
   render them as inert text, never execute or interpret them as
