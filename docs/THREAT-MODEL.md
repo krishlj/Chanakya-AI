@@ -755,6 +755,20 @@ Likelihood/Impact/Risk use: **Low / Medium / High / Critical**.
 - **Residual risk**: Medium in Phase 1 (bounded by local-session trust),
   explicitly **higher and unresolved** for any future remote approval
   channel until designed.
+- **Phase 7 status**: `TerminalApprovalProvider` binds each decision to
+  its `approval_request_id`, and `dispatch()` rejects any other binding.
+  **Gap:** `decided_by` defaults to the OS user but can be overridden
+  with `--approver` (free-form), so it is not yet an authenticated
+  identity as the preventive control above assumes. It is recorded in
+  the durable audit trail.
+- **Terminal injection (Phase 7, TB-1/TB-5)**: the approval prompt and
+  the CLI show Agent-proposed values (capability, `target_ref`,
+  parameters) and error details. Crafted control characters or ANSI
+  escapes could otherwise redraw the prompt and mislead the approver.
+  These values are treated as untrusted and rendered with
+  `json.dumps(..., ensure_ascii=True)`, so escapes are printed escaped.
+  The human's input is never echoed. Only the literal word `approve`
+  yields ACCEPT.
 
 ### T-18 — Audit-log or evidence tampering
 - **Attack path**: An attacker with local file access (compromised host,
@@ -871,6 +885,12 @@ Likelihood/Impact/Risk use: **Low / Medium / High / Critical**.
   phase.
 - **Residual risk**: Low, standard secret-hygiene risk once controls are
   in place.
+- **Phase 7 status**: the CLI's `main()` is the only code that reads
+  `ProviderConfig.api_key_env_var` from the environment. It reads it
+  once, passes it directly to `AnthropicProvider`, and never prints,
+  logs or stores it. A missing key exits non-zero before anything is
+  built, naming only the variable. Tests assert the key is absent from
+  terminal output, audit records, evidence and the model request body.
 
 ### T-22 — Sensitive evidence leakage
 - **Attack path**: Evidence Store contents are read by an unauthorized

@@ -756,6 +756,60 @@ system's trust anchor for anything beyond read-only (`ARCHITECTURE.md`
 §18).
 **Security boundary**: TB-5.
 
+### Terminal approval and CLI composition (Phase 7)
+
+`chanakya.approval.TerminalApprovalProvider(approver, *, input_fn,
+output, max_attempts=3)` implements the existing `ApprovalProvider`
+protocol. `chanakya.cli.main.build_runtime` wires it into
+`AgentLoopController` together with the real production components.
+Nothing about the approval flow above changed. The Runtime still calls
+the provider only for `require_approval`, and it still checks expiry and
+cancellation. `dispatch()` still refuses any ACCEPT that is not bound to
+this request, tool request, policy decision and investigation.
+
+- **Answers.** Only `approve` or `deny` is accepted, after trimming and
+  lower-casing and as ASCII only. Invalid input re-prompts, and after
+  `max_attempts` the provider raises `ApprovalInputError`. EOF or Ctrl+C
+  raises `ApprovalAborted`. Both are `Exception` subclasses, so the
+  existing backstop fails the investigation (audited `error`) and nothing
+  is dispatched.
+- **Display.** Capability, `target_ref`, parameters and expiry come from
+  the Agent's proposal, so they are untrusted. Each is rendered with
+  `json.dumps(..., ensure_ascii=True)`, so control characters and ANSI
+  escapes are printed escaped. The human's input is never echoed.
+- **`decided_by`.** This is the `--approver` value, or the OS user by
+  default. The reserved names `agent` and `system` are refused.
+- **N1 fix.** `risk_context["parameters"]` is now a deep copy
+  (`copy.deepcopy`). Previously a shallow copy let anything holding the
+  `ApprovalRequest` mutate nested values of the `ToolRequest` that the
+  Gateway validated and that `dispatch()` would run.
+- **CLI driver.** `run_investigation` loops `run_turn` with
+  `capability_catalog=registry.catalog_view()` and the last few tool
+  results. `max_steps_per_investigation` counts only tool proposals, so
+  the CLI also caps turns (`--max-turns`, default 8). At the cap, or on
+  Ctrl+C outside the approval prompt, it calls
+  `InvestigationManager.cancel`, and the investigation ends `halted`
+  (audited).
+
+| ID | Invariant | Tests |
+|---|---|---|
+| HA/CLI-INV-1 | The CLI never evaluates policy or executes tools directly. | `test_cli_and_approval_modules_hold_no_execution_or_policy_path` |
+| HA/CLI-INV-2 | The ApprovalProvider only answers Runtime-issued `ApprovalRequest`s. | `test_policy_allow_never_asks_the_human`, `test_policy_deny_never_asks_the_human`, `test_non_request_input_is_refused` |
+| HA/CLI-INV-3 | Only the literal `approve` can produce ACCEPT. | `test_only_the_literal_word_approve_produces_accept`, `test_model_claiming_approval_still_requires_the_human` |
+| HA/CLI-INV-4 | Invalid input, EOF and Ctrl+C never produce ACCEPT. | `test_invalid_input_exhausted_raises_and_never_accepts`, `test_eof_and_ctrl_c_abort_as_ordinary_exceptions`, `test_ctrl_c_at_the_approval_prompt_fails_closed_and_is_audited` |
+| HA/CLI-INV-5 | `ApprovalRequest` data cannot mutate the original `ToolRequest` parameters. | `test_approval_request_cannot_mutate_the_dispatched_tool_request`, `test_request_is_not_mutated` |
+| HA/CLI-INV-6 | All terminal-displayed untrusted values are escaped. | `test_untrusted_values_are_displayed_escaped` |
+| HA/CLI-INV-7 | Credentials never appear in terminal output, model context, Evidence or Audit. | `test_main_reads_the_key_once_and_it_never_leaks`, `test_missing_api_key_exits_nonzero_without_starting` |
+| HA/CLI-INV-8 | The production capability catalog comes from `SecurityToolRegistry`. | `test_catalog_comes_from_the_registry` |
+| HA/CLI-INV-9 | `InvestigationManager` and `AgentLoopController` share one durable `AuditEmitter`. | `test_one_durable_audit_emitter_is_shared` |
+| HA/CLI-INV-10 | Policy DENY and ALLOW never invoke the ApprovalProvider. | `test_policy_allow_never_asks_the_human`, `test_policy_deny_never_asks_the_human` |
+| HA/CLI-INV-11 | Human approval never bypasses the Policy Gateway. | `test_require_approval_and_approve_executes_with_evidence_and_durable_audit`, `test_policy_deny_never_asks_the_human` |
+
+**Deferred:** justification/comment capture (including P4
+`justification_required`), async/remote/multi-approver approval,
+displaying the Agent's explanation (`TurnResult` does not carry it),
+investigation persistence/resume, and config files.
+
 ---
 
 ## 14. Audit event generation

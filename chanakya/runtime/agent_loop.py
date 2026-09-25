@@ -23,6 +23,7 @@ provider, no real Tool Layer, no bypass of the Policy Gateway.
 """
 from __future__ import annotations
 
+import copy
 import json
 import time
 import uuid
@@ -618,7 +619,10 @@ class AgentLoopController:
             risk_context={
                 "capability": tool_request.capability,
                 "target_ref": tool_request.target_ref,
-                "parameters": dict(tool_request.parameters),
+                # Phase 7 (N1): deep copy, so nothing holding the
+                # ApprovalRequest can mutate nested values of the
+                # ToolRequest that the Gateway validated and will dispatch.
+                "parameters": copy.deepcopy(dict(tool_request.parameters)),
             },
             status=ApprovalStatus.PENDING,
             requested_at=requested_at,

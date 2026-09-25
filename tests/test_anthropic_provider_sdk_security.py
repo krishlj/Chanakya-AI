@@ -1660,6 +1660,13 @@ def _imported_modules(path: Path) -> List[str]:
     return names
 
 
+#: Phase 7 (approved exemption): the single composition root may import
+#: ``chanakya.providers`` to construct ``AnthropicProvider``/``ProviderConfig``.
+#: SDK/transport imports stay forbidden everywhere outside the providers
+#: package, the composition root included.
+_COMPOSITION_ROOT = _CHANAKYA_ROOT / "cli" / "main.py"
+
+
 def test_sdk_and_transport_imports_are_confined_to_the_providers_package():
     providers_dir = _CHANAKYA_ROOT / "providers"
     offenders = []
@@ -1667,7 +1674,9 @@ def test_sdk_and_transport_imports_are_confined_to_the_providers_package():
         if providers_dir in path.parents:
             continue
         for module in _imported_modules(path):
-            if module.split(".")[0] in {"anthropic", "httpx", "httpx2"} or module.startswith("chanakya.providers"):
+            if module.split(".")[0] in {"anthropic", "httpx", "httpx2"}:
+                offenders.append(f"{path.relative_to(_REPO_ROOT)} -> {module}")
+            elif module.startswith("chanakya.providers") and path != _COMPOSITION_ROOT:
                 offenders.append(f"{path.relative_to(_REPO_ROOT)} -> {module}")
     assert offenders == []
 

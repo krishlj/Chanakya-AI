@@ -65,6 +65,19 @@ defined session interface, so a future Web GUI can be added as an
 alternate frontend against the same Runtime without touching any layer
 below it.
 
+**Status (Phase 7):** a minimal standard-library CLI exists
+(`python -m chanakya.cli "<objective>"`, `chanakya/cli/main.py`). Its
+composition root (`build_runtime`) is the one reviewed place that builds
+the production Runtime. That covers the Registry, the Gateway, the
+ToolExecutor, the Evidence Store, the durable Audit Log with one shared
+`AuditEmitter`, and the approval provider. The CLI never evaluates
+policy, dispatches or executes tools, or writes Evidence or audit records;
+it only calls `create_investigation`, `start`, `cancel` and `run_turn`.
+`main()` reads the provider API key from the environment once and hands
+it straight to `AnthropicProvider`; nothing displays, logs or stores it.
+The Agent's explanation text is not shown yet. See `docs/AGENT-RUNTIME.md`
+§13.
+
 ## 2. AI Agent
 
 The reasoning role. Given the current investigation state and available
@@ -231,6 +244,13 @@ into an executable action. Responsibilities:
 
 No default/implicit approval path exists — absence of a response blocks
 progress rather than being treated as consent.
+
+**Status (Phase 7):** `chanakya.approval.TerminalApprovalProvider`
+implements this mechanism for the CLI. It only answers `ApprovalRequest`s
+the Runtime issues for a `require_approval` verdict; policy stays with the
+Gateway. Only the literal word `approve` yields ACCEPT. Invalid input,
+EOF and Ctrl+C never do: they fail the investigation closed. No
+justification or comment is collected yet.
 
 ## 14. Audit Logging
 
