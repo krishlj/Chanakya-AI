@@ -45,6 +45,24 @@ class UnknownTargetError(RuntimeInvariantError):
     requirements)."""
 
 
+class TargetContextScopeError(RuntimeInvariantError):
+    """docs/TARGET-AWARE-AGENT-CONTEXT.md TC-INV-3 (Phase 5.7.3). Raised
+    by ``ContextAssembler.assemble`` when supplied target context does not
+    exactly describe the investigation's own ``target_refs`` (one view per
+    distinct ref, in order) — an out-of-scope, missing, duplicated, or
+    reordered view. Fails closed: no ``AssembledContext`` is produced."""
+
+
+class EnvironmentContextScopeError(RuntimeInvariantError):
+    """docs/TARGET-AWARE-AGENT-CONTEXT.md §13a EC-INV-2/EC-INV-11 (Phase
+    5.7.6). Raised when supplied environment context is not bound to the
+    investigation: an entry that is not an ``EnvironmentContext``, whose
+    ``target_id`` is not in the investigation's ``target_refs``, a
+    duplicate ``environment_context_id``, or more entries than the
+    per-assembly bound. Fails closed:
+    no ``AssembledContext`` is produced; nothing is dropped or re-bound."""
+
+
 class UnknownInvestigationError(RuntimeInvariantError):
     """Raised by ``InvestigationStateStore`` for an unrecognized
     ``investigation_id``."""

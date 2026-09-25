@@ -11,6 +11,12 @@ import dataclasses
 from datetime import datetime, timezone
 from typing import Dict, Iterable, List, Optional
 
+from chanakya.capability.reserved import (
+    ROOT_SCHEMA_ALLOWED_KEYWORDS,
+    find_reserved_parameter_declarations,
+    find_root_schema_violations,
+)
+
 from .exceptions import RegistryAdmissionError
 from .models import ALLOWED_STATUS_TRANSITIONS, RegistryEntry, Status
 
@@ -40,6 +46,31 @@ class SecurityToolRegistry:
             self.register(entry)
 
     def register(self, entry: RegistryEntry) -> None:
+        # Phase 5.7.5 (docs/TARGET-AWARE-AGENT-CONTEXT.md §15, F-4):
+        # ``target_ref`` is Runtime-reserved — it is how the Agent proposes a
+        # target, validated by Intake and authorized only by the Policy
+        # Gateway. A capability declaring it anywhere in its parameter schema
+        # is never admitted, in any status, so it can never be enabled or
+        # looked up. Nothing is renamed, removed, or overridden. This only
+        # protects the parameter namespace; it is not an authorization check.
+        reserved = find_reserved_parameter_declarations(entry.parameters_schema)
+        if reserved:
+            raise RegistryAdmissionError(
+                f"capability {entry.capability!r} declares Runtime-reserved parameter name(s) "
+                f"at {reserved!r}; 'target_ref' is owned by the Runtime for target selection"
+            )
+        # Phase 5.7.7 F-9: the root schema is limited to a keyword allowlist,
+        # because root-level applicators and object assertions
+        # (patternProperties, allOf, $ref, const, ...) can constrain or block
+        # 'target_ref' without declaring it by name. In addition to, never
+        # instead of, the recursive check above.
+        root_violations = find_root_schema_violations(entry.parameters_schema)
+        if root_violations:
+            raise RegistryAdmissionError(
+                f"capability {entry.capability!r} parameters_schema uses root keyword(s) outside the allowlist "
+                f"{sorted(ROOT_SCHEMA_ALLOWED_KEYWORDS)!r} at {root_violations!r}; root keywords could "
+                f"constrain the Runtime-reserved 'target_ref'"
+            )
         if entry.capability in self._by_capability:
             raise RegistryAdmissionError(f"capability already registered: {entry.capability!r}")
         if entry.tool_id in self._by_tool_id:

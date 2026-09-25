@@ -1,5 +1,13 @@
 from .adapter import AvailabilityResult, DiscoveryResult, TargetAdapter, ValidationResult
+from .context import TargetContextProjectionError, TargetContextView, project_target
 from .environment import EnvironmentContext, EnvironmentSource, ObservationConfidence, TargetObservation
+from .environment_source import EnvironmentContextUnavailableError, TargetManagerEnvironmentSource
+from .environment_view import (
+    EnvironmentContextProjectionError,
+    EnvironmentContextView,
+    EnvironmentObservationView,
+    project_environment_context,
+)
 from .exceptions import (
     DuplicateAdapterRegistrationError,
     InvalidTargetStatusTransitionError,
@@ -25,4 +33,13 @@ __all__ = [
     "TargetObservation",
     "EnvironmentSource",
     "ObservationConfidence",
+    "TargetContextView",
+    "TargetContextProjectionError",
+    "project_target",
+    "EnvironmentContextView",
+    "EnvironmentObservationView",
+    "EnvironmentContextProjectionError",
+    "project_environment_context",
+    "EnvironmentContextUnavailableError",
+    "TargetManagerEnvironmentSource",
 ]

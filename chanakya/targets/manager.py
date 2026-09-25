@@ -39,6 +39,13 @@ any kind — mirrors ``PolicyGateway.evaluate()``'s own documented
 fail-closed ``try/except Exception`` precedent (SR-9), applied here to
 descriptive collection rather than to authorization.
 
+Phase 5.7.3 adds ``describe_targets`` (docs/TARGET-AWARE-AGENT-CONTEXT.md
+§10): a read-only projection of given target ids into model-visible
+``TargetContextView`` objects. It structurally satisfies the Runtime's
+narrow ``TargetContextSource`` Protocol, so the Runtime can be handed
+this capability without gaining any lifecycle, adapter, or mutation
+method through that path.
+
 Still deliberately NOT implemented (later phases in the approved design):
 
 - remote/non-local adapters, discovery workflows            -> future phases
@@ -68,6 +75,7 @@ from chanakya.contracts.target import (
 )
 
 from .adapter import TargetAdapter
+from .context import TargetContextView, project_target
 from .environment import EnvironmentContext
 from .exceptions import (
     DuplicateAdapterRegistrationError,
@@ -168,6 +176,43 @@ class TargetManager:
                 raise UnregisteredTargetError(f"target is not registered: {target_id!r}")
             resolved.append(target)
         return tuple(resolved)
+
+    def describe_targets(self, target_ids: Iterable[str]) -> Tuple[TargetContextView, ...]:
+        """docs/TARGET-AWARE-AGENT-CONTEXT.md §10 (Phase 5.7.3) — the
+        descriptive, model-visible projection of exactly the given target
+        ids, for one investigation's context assembly.
+
+        - Read-only: resolves via the composed ``TargetRegistry`` and
+          applies ``project_target``; no lifecycle transition, no adapter
+          call, no ``EnvironmentContext`` collection, no cache.
+        - Scoped: returns views only for the ids given — there is no
+          "describe every registered target" path (target-enumeration
+          control, TC-INV-3).
+        - One view per distinct id, in first-occurrence order (duplicate
+          ids collapse — docs/TARGET-AWARE-AGENT-CONTEXT.md §18/F-5).
+        - Fails closed: ``UnregisteredTargetError`` on the first id that
+          does not resolve (never omitted, substituted, or invented), and
+          ``TargetContextProjectionError`` if a target's allowlisted values
+          fail projection validation. No partial result is ever returned.
+
+        Returns ``TargetContextView`` objects only — never a raw
+        ``Target``. Never consulted for, and never produces, an
+        authorization decision (TM-INV-1).
+        """
+        if isinstance(target_ids, (str, bytes)):
+            raise TypeError("describe_targets requires a collection of target ids, not a single string")
+
+        views = []
+        seen = set()
+        for target_id in target_ids:
+            if target_id in seen:
+                continue
+            seen.add(target_id)
+            target = self._registry.get(target_id)
+            if target is None:
+                raise UnregisteredTargetError(f"target is not registered: {target_id!r}")
+            views.append(project_target(target))
+        return tuple(views)
 
     # -- lifecycle transitions --------------------------------------------------
 

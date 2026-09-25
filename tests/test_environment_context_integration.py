@@ -27,7 +27,9 @@ from chanakya.registry.models import RegistryEntry
 from chanakya.registry.registry import SecurityToolRegistry
 from chanakya.runtime.context_assembler import AssembledContext, ContextAssembler, UntrustedData
 from chanakya.targets.adapters import LocalHostAdapter
+from chanakya.runtime.exceptions import EnvironmentContextScopeError
 from chanakya.targets.environment import EnvironmentContext, EnvironmentSource, TargetObservation
+from chanakya.targets.environment_view import EnvironmentContextView
 from chanakya.targets.exceptions import NoAdapterRegisteredError
 from chanakya.targets.manager import EnvironmentCollectionResult, TargetManager
 from chanakya.targets.registry import TargetRegistry
@@ -102,10 +104,14 @@ def test_environment_context_reaches_the_assembled_context():
     ec = make_environment_context()
     assembled = ContextAssembler.assemble(make_investigation_context(), environment_contexts=[ec])
 
-    matching = [d for d in assembled.data if d.source == f"environment_context:{ec.environment_context_id}"]
-    assert len(matching) == 1
-    assert matching[0].content["target_id"] == "target-eci-01"
-    assert matching[0].content["collected_by"] == "local-host-adapter"
+    # Phase 5.7.6: environment data moved from `data` to its own bound, allowlisted field.
+    assert len(assembled.environment_context) == 1
+    (view,) = assembled.environment_context
+    assert view.target_id == "target-eci-01"
+    # collected_by is adapter-internal and excluded from the model-facing projection (EC-INV-9).
+    assert "collected_by" not in view.as_model_mapping()
+    assert "local-host-adapter" not in str(view.as_model_mapping())
+    assert not any(d.source.startswith("environment_context:") for d in assembled.data)
 
 
 def test_local_host_adapter_output_flows_end_to_end_into_assembled_context():
@@ -117,9 +123,9 @@ def test_local_host_adapter_output_flows_end_to_end_into_assembled_context():
     assert result.succeeded
     assembled = ContextAssembler.assemble(make_investigation_context(), environment_contexts=[result.environment_context])
 
-    assert any(d.source.startswith("environment_context:") for d in assembled.data)
-    payload = next(d for d in assembled.data if d.source.startswith("environment_context:"))
-    keys = {obs["key"] for obs in payload.content["observations"]}
+    # Phase 5.7.6: environment data moved from `data` to its own bound, allowlisted field.
+    (view,) = assembled.environment_context
+    keys = {obs["key"] for obs in view.as_model_mapping()["observations"]}
     assert "os_name" in keys
 
 
@@ -135,8 +141,13 @@ def test_environment_data_is_isolated_from_instructions_text():
 def test_environment_data_entries_are_untrusted_data_wrapped():
     ec = make_environment_context()
     assembled = ContextAssembler.assemble(make_investigation_context(), environment_contexts=[ec])
-    env_entries = [d for d in assembled.data if d.source.startswith("environment_context:")]
-    assert all(isinstance(d, UntrustedData) for d in env_entries)
+    # Phase 5.7.6: environment data moved from `data` to its own bound, allowlisted field.
+    # Environment entries are typed EnvironmentContextView in their own field;
+    # `data` still holds only UntrustedData and no environment entry.
+    assert len(assembled.environment_context) == 1
+    assert all(isinstance(v, EnvironmentContextView) for v in assembled.environment_context)
+    assert all(isinstance(d, UntrustedData) for d in assembled.data)
+    assert not any(d.source.startswith("environment_context:") for d in assembled.data)
 
 
 # -- 3. Malicious observation strings remain data -----------------------------
@@ -156,8 +167,9 @@ def test_adversarial_observation_strings_remain_ordinary_data(payload):
     ec = make_environment_context(observations=(TargetObservation(key="banner", value=payload),))
     assembled = ContextAssembler.assemble(make_investigation_context(), environment_contexts=[ec])
 
-    env_entry = next(d for d in assembled.data if d.source.startswith("environment_context:"))
-    stored_value = next(o["value"] for o in env_entry.content["observations"] if o["key"] == "banner")
+    # Phase 5.7.6: environment data moved from `data` to its own bound, allowlisted field.
+    (env_entry,) = assembled.environment_context
+    stored_value = next(o.value for o in env_entry.observations if o.key == "banner")
 
     assert stored_value == payload  # stored verbatim, never parsed
     assert payload not in assembled.instructions  # never leaks into trusted framing text
@@ -340,12 +352,16 @@ def test_environment_data_does_not_leak_across_investigations():
     assembled_a = ContextAssembler.assemble(context_a, environment_contexts=[ec_a])
     assembled_b = ContextAssembler.assemble(context_b, environment_contexts=[ec_b])
 
-    a_sources = {d.source for d in assembled_a.data}
-    b_sources = {d.source for d in assembled_b.data}
-    assert "environment_context:ec-a" in a_sources
-    assert "environment_context:ec-a" not in b_sources
-    assert "environment_context:ec-b" in b_sources
-    assert "environment_context:ec-b" not in a_sources
+    # Phase 5.7.6: environment data moved from `data` to its own bound, allowlisted field.
+    assert [v.target_id for v in assembled_a.environment_context] == ["target-a"]
+    assert [v.target_id for v in assembled_b.environment_context] == ["target-b"]
+    assert "belongs-to-investigation-A" in str(assembled_a.environment_context)
+    assert "belongs-to-investigation-A" not in str(assembled_b.environment_context)
+    assert "belongs-to-investigation-B" in str(assembled_b.environment_context)
+    assert "belongs-to-investigation-B" not in str(assembled_a.environment_context)
+    # Phase 5.7.6 (EC-INV-2): handing A's observation to B's assembly fails closed.
+    with pytest.raises(EnvironmentContextScopeError):
+        ContextAssembler.assemble(context_b, environment_contexts=[ec_a])
 
 
 # -- 13 & 14. LocalHostAdapter must be explicitly registered; unknown adapter unavailable --

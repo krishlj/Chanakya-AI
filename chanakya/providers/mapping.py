@@ -19,6 +19,24 @@ Security-relevant properties this module is responsible for (see
   ``user`` message, each item keeping its own ``source``/``content``
   pair distinct — never flattened into the system/instruction text and
   never itself treated as a system or control message.
+- ``AssembledContext.target_context`` (Phase 5.7.4 — descriptive,
+  investigation-scoped ``TargetContextView`` entries) is serialized into
+  that same ``user`` message as its own ``investigation_targets`` section,
+  built only from ``TargetContextView.as_model_mapping()`` — never placed
+  in ``system``, never in a tool schema, never merged with
+  ``untrusted_data``, and never used to fill a ``target_ref``. Omitted
+  entirely when there is no target context, so such requests are
+  byte-identical to pre-5.7.4 requests.
+- ``AssembledContext.environment_context`` (Phase 5.7.6 — observational,
+  untrusted, investigation-bound ``EnvironmentContextView`` entries) is
+  serialized into that same ``user`` message as its own
+  ``untrusted_environment_observations`` section, built only from
+  ``EnvironmentContextView.as_model_mapping()`` — never in ``system``,
+  never in a tool name/description/schema, never merged with
+  ``investigation_targets`` or ``untrusted_data``, and never used to fill
+  a ``target_ref``. Omitted entirely when empty (byte-identical to
+  pre-5.7.6 requests). This module never discovers environment data: it
+  renders only what the Runtime already assembled.
 - The response is walked for content blocks by structural type only
   (``TextBlock``/``ToolUseBlock``); no Anthropic SDK object is ever
   returned from a public function here — only plain ``dict``/``str``/
@@ -31,9 +49,12 @@ import json
 import uuid
 from typing import Any, Mapping, MutableMapping, Optional
 
+from chanakya.capability.reserved import RESERVED_TARGET_PARAMETER, find_reserved_parameter_declarations
 from chanakya.contracts.enums import SUPPORTED_CONTRACT_VERSIONS
 from chanakya.runtime.clock import utcnow_iso
 from chanakya.runtime.context_assembler import AssembledContext
+from chanakya.targets.context import TargetContextView
+from chanakya.targets.environment_view import EnvironmentContextView
 
 from .config import ProviderConfig
 
@@ -62,8 +83,42 @@ _DEFAULT_MAX_TOKENS = 4096
 #: invent on the model's behalf — so it is requested from the model the
 #: same way any other capability parameter is, and then split back out
 #: of ``parameters`` before the raw tool_request dict is built. See the
-#: Phase 5.6.3 report's "Limitations" section.
-_TARGET_REF_PARAM = "target_ref"
+#: Phase 5.6.3 report's "Limitations" section. Phase 5.7.4: the model now
+#: also receives the investigation's targets (``investigation_targets``
+#: in the user message) to choose from — but the value is still only its
+#: proposal, never filled in here, and still validated by
+#: ToolRequestIntake and the Policy Gateway. Phase 5.7.5: the name is the
+#: provider-neutral, Runtime-reserved ``RESERVED_TARGET_PARAMETER``
+#: (``chanakya.capability.reserved``); the Registry refuses to admit a
+#: capability that declares it, and this module refuses to build a tool
+#: from a catalog entry that declares it (the catalog is caller-supplied,
+#: so the Registry check alone does not cover every path here).
+_TARGET_REF_PARAM = RESERVED_TARGET_PARAMETER
+
+#: Phase 5.7.5 — fixed, provider-authored description of the reserved
+#: parameter. Deterministic (never interpolates target ids or any other
+#: per-investigation value; no ``enum``), and deliberately worded as a
+#: proposal: it names ``investigation_targets`` as where target ids come
+#: from, and states that being listed there does not mean an action will
+#: be allowed. Carries no Agent-authored or target-authored text.
+_TARGET_REF_DESCRIPTION = (
+    "Required. The target this proposed action applies to: the target_id of one entry in "
+    "investigation_targets. This value is only a proposal. Chanakya validates it and the Policy "
+    "Gateway decides whether the action may run against that target; being listed in "
+    "investigation_targets does not mean an action against that target will be allowed."
+)
+
+#: Phase 5.7.4 — user-message key for the target-context section
+#: (docs/TARGET-AWARE-AGENT-CONTEXT.md §14). A sibling of, never nested
+#: in or merged with, ``untrusted_data``.
+_TARGET_CONTEXT_KEY = "investigation_targets"
+
+#: Phase 5.7.6 — user-message key for the environment section
+#: (docs/TARGET-AWARE-AGENT-CONTEXT.md §13a). Self-describing as untrusted
+#: so the model can tell it apart from both target identity
+#: (``investigation_targets``) and tool output (``untrusted_data``) without
+#: any change to the Runtime-authored system text.
+_ENVIRONMENT_CONTEXT_KEY = "untrusted_environment_observations"
 
 
 def build_request_kwargs(assembled_context: AssembledContext, config: ProviderConfig) -> MutableMapping[str, Any]:
@@ -76,13 +131,21 @@ def build_request_kwargs(assembled_context: AssembledContext, config: ProviderCo
     object that preserves each entry's ``source``, and never appears in
     ``system``. The capability catalog is passed as native Anthropic
     ``tools``, not embedded in prompt text.
+
+    ``assembled_context.target_context`` (descriptive, investigation-scoped)
+    is rendered as a separate ``investigation_targets`` section of the same
+    user message, in the order given — see ``_target_context_section``.
     """
-    user_payload = {
-        "investigation_id": assembled_context.investigation_id,
-        "untrusted_data": [
-            {"source": entry.source, "content": entry.content} for entry in assembled_context.data
-        ],
-    }
+    user_payload: MutableMapping[str, Any] = {"investigation_id": assembled_context.investigation_id}
+    targets = _target_context_section(assembled_context.target_context)
+    if targets:
+        user_payload[_TARGET_CONTEXT_KEY] = targets
+    environment = _environment_context_section(getattr(assembled_context, "environment_context", ()))
+    if environment:
+        user_payload[_ENVIRONMENT_CONTEXT_KEY] = environment
+    user_payload["untrusted_data"] = [
+        {"source": entry.source, "content": entry.content} for entry in assembled_context.data
+    ]
     user_text = json.dumps(user_payload, default=str)
 
     kwargs: MutableMapping[str, Any] = {
@@ -110,6 +173,48 @@ def build_request_kwargs(assembled_context: AssembledContext, config: ProviderCo
     return kwargs
 
 
+def _target_context_section(target_context: Any) -> list:
+    """Serializes target context through the approved, provider-neutral
+    representation only: ``TargetContextView.as_model_mapping()`` (fixed
+    keys, ``str``/``None`` values). Order is preserved exactly as the
+    Runtime assembled it — no re-sorting, no de-duplication, no filtering
+    (all of that is the Runtime's job, already done and scope-checked).
+
+    Fails closed with ``TypeError`` on any entry that is not a
+    ``TargetContextView`` (e.g. a raw ``Target``, a dict, an
+    ``EnvironmentContext``) rather than serializing it by some other route
+    (TC-INV-9). The provider raising means no request is sent; the
+    Runtime's existing fail-closed backstop handles it.
+    """
+    section = []
+    for view in target_context or ():
+        if not isinstance(view, TargetContextView):
+            raise TypeError(
+                f"AssembledContext.target_context entries must be TargetContextView, got {type(view).__name__}"
+            )
+        section.append(view.as_model_mapping())
+    return section
+
+
+def _environment_context_section(environment_context: Any) -> list:
+    """Serializes environment context through the approved,
+    provider-neutral representation only:
+    ``EnvironmentContextView.as_model_mapping()``. Order is preserved
+    exactly as the Runtime assembled it; binding/projection were already
+    enforced there. Fails closed with ``TypeError`` on any entry that is not
+    an ``EnvironmentContextView`` (e.g. a raw ``EnvironmentContext``, a
+    dict, a ``TargetContextView``), so no request is sent."""
+    section = []
+    for view in environment_context or ():
+        if not isinstance(view, EnvironmentContextView):
+            raise TypeError(
+                "AssembledContext.environment_context entries must be EnvironmentContextView, "
+                f"got {type(view).__name__}"
+            )
+        section.append(view.as_model_mapping())
+    return section
+
+
 def _build_tool_param(entry: Mapping[str, Any]) -> Mapping[str, Any]:
     """Maps one Capability Catalog View entry (docs/TOOL-REGISTRY.md §4)
     into an Anthropic ``ToolParam``. Only the catalog's own Agent-visible
@@ -119,13 +224,22 @@ def _build_tool_param(entry: Mapping[str, Any]) -> Mapping[str, Any]:
     not re-derive, that existing filtering).
     """
     raw_schema = entry.get("parameters_schema")
+    # Phase 5.7.5 (F-4): never silently shadow a capability's own
+    # declaration of the reserved name — fail closed (no request is sent;
+    # the Runtime's existing fail-closed path handles the raised error).
+    reserved = find_reserved_parameter_declarations(raw_schema)
+    if reserved:
+        raise ValueError(
+            f"capability {entry.get('capability')!r} declares Runtime-reserved parameter "
+            f"{_TARGET_REF_PARAM!r} at {reserved!r}; refusing to build its tool definition"
+        )
     schema: MutableMapping[str, Any] = dict(raw_schema) if isinstance(raw_schema, Mapping) else {"type": "object"}
     schema.setdefault("type", "object")
 
     properties = dict(schema.get("properties") or {})
     properties[_TARGET_REF_PARAM] = {
         "type": "string",
-        "description": "The target identifier this action applies to.",
+        "description": _TARGET_REF_DESCRIPTION,
     }
     schema["properties"] = properties
 

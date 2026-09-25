@@ -43,19 +43,32 @@ from chanakya.contracts.policy_decision import PolicyDecision
 from chanakya.contracts.tool_request import MalformedRequestError, ToolRequest
 from chanakya.contracts.tool_result import ToolResult, ToolResultStatus
 from chanakya.policy.gateway import EvaluationContext
+from chanakya.targets.context import TargetContextProjectionError
+from chanakya.targets.environment_source import EnvironmentContextUnavailableError
+from chanakya.targets.environment_view import EnvironmentContextProjectionError, EnvironmentContextView
+from chanakya.targets.exceptions import UnregisteredTargetError
 
 from .agent_turn import AgentTurnOutput, NextAction
 from .audit import AuditEmitter
 from .clock import add_seconds, utcnow_iso
-from .context_assembler import AssembledContext, ContextAssembler
+from .context_assembler import (
+    AssembledContext,
+    ContextAssembler,
+    EnvironmentContextSource,
+    TargetContextSource,
+    validate_environment_context_scope,
+    validate_target_context_scope,
+)
 from .dispatch import DispatchInstruction, ToolExecutor, dispatch
 from .evidence import EvidenceRecorder, StubEvidenceRecorder
 from .exceptions import (
     AuditSinkError,
     DispatchPreconditionError,
+    EnvironmentContextScopeError,
     InvestigationTerminatedError,
     MalformedAgentTurnOutputError,
     ResourceLimitExceededError,
+    TargetContextScopeError,
 )
 from .investigation_manager import InvestigationManager
 from .limits import ApprovalExpiryAction
@@ -111,6 +124,26 @@ def _estimate_size_bytes(value: Any) -> int:
         )
     except (TypeError, ValueError, RecursionError):
         return _UNMEASURABLE_SIZE_BYTES
+
+
+def _verify_environment_context_binding(
+    context: InvestigationContext, environment_context: Sequence[Any]
+) -> None:
+    """Phase 5.7.6 defense in depth (EC-INV-2/7): whatever assembler
+    produced ``environment_context`` — including an injected one when no
+    source is configured — every entry must be an ``EnvironmentContextView``
+    bound to one of this investigation's own targets."""
+    in_scope = frozenset(context.target_refs)
+    for entry in environment_context:
+        if not isinstance(entry, EnvironmentContextView):
+            raise EnvironmentContextScopeError(
+                f"assembled environment context entries must be EnvironmentContextView, got {type(entry).__name__}"
+            )
+        if entry.target_id not in in_scope:
+            raise EnvironmentContextScopeError(
+                f"assembled environment context references a target outside investigation "
+                f"{context.investigation_id!r} target_refs"
+            )
 
 
 class AgentProvider(Protocol):
@@ -193,6 +226,8 @@ class AgentLoopController:
         retry_controller: Optional[RetryController] = None,
         timeout_supervisor: Optional[TimeoutSupervisor] = None,
         audit: Optional[AuditEmitter] = None,
+        target_context_source: Optional[TargetContextSource] = None,
+        environment_context_source: Optional[EnvironmentContextSource] = None,
         clock=utcnow_iso,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
@@ -206,6 +241,15 @@ class AgentLoopController:
         self._retry_controller = retry_controller or RetryController(resource_governor.limits)
         self._timeout_supervisor = timeout_supervisor or TimeoutSupervisor(resource_governor, clock=clock)
         self._audit = audit if audit is not None else AuditEmitter(clock=clock)
+        # Phase 5.7.3 (docs/TARGET-AWARE-AGENT-CONTEXT.md §10): optional,
+        # narrow, descriptive-only. None -> empty target context (the
+        # pre-5.7.3 behavior). Never passed to the Policy Gateway.
+        self._target_context_source = target_context_source
+        # Phase 5.7.6 (docs/TARGET-AWARE-AGENT-CONTEXT.md §13a): optional,
+        # opt-in, observational-only. None -> no environment context. Called
+        # once per turn (fresh, never cached). Never passed to the Policy
+        # Gateway, never used to fill a target_ref.
+        self._environment_context_source = environment_context_source
         self._clock = clock
         self._sleep = sleep
 
@@ -300,22 +344,105 @@ class AgentLoopController:
             )
             return TurnResult(outcome=TurnOutcome.HALTED, detail=str(exc))
 
-        assembled = self._context_assembler.assemble(
-            context, capability_catalog=capability_catalog, recent_tool_results=recent_tool_results
-        )
+        # Phase 5.7.3 (TC-INV-3): target context is derived ONLY from this
+        # investigation's own target_refs, freshly each turn (no cache), and
+        # the assembler re-verifies scope. Any failure to build it — an
+        # unregistered target, a target whose allowlisted values fail
+        # projection, or a scope mismatch — fails the investigation closed
+        # BEFORE the provider (or anything downstream) is ever reached;
+        # target context is never omitted, partial, or invented.
+        #
+        # Phase 5.7.6 (EC-INV-2/7/11): environment context follows the same
+        # pattern — collected freshly each turn for this investigation's own
+        # target_refs, bound + projected by the loop itself, then confirmed
+        # to be exactly what the assembler carried. Any collection, binding,
+        # or projection failure fails the investigation closed before the
+        # provider is reached; nothing is dropped, re-bound, or truncated.
+        #
+        # Without a configured source, the assembler is called exactly as
+        # before (no new keyword), so any existing injected ContextAssembler
+        # stays compatible. With a source, the loop checks scope itself and
+        # then confirms the assembler carried exactly those views — it does
+        # not rely on an injected assembler to validate.
+        try:
+            assemble_kwargs = {}
+            target_contexts = None
+            if self._target_context_source is not None:
+                target_contexts = validate_target_context_scope(
+                    context, self._target_context_source.describe_targets(context.target_refs), required=True
+                )
+                assemble_kwargs["target_contexts"] = target_contexts
+            expected_environment = None
+            if self._environment_context_source is not None:
+                environment_contexts = tuple(
+                    self._environment_context_source.collect_environment_contexts(context.target_refs)
+                )
+                expected_environment = validate_environment_context_scope(context, environment_contexts)
+                # Phase 5.7.7: a configured source must cover every target of
+                # this investigation. A source that silently drops one gives
+                # the model partial observations; fail closed instead, the
+                # same rule required-mode target context applies.
+                uncovered = set(context.target_refs) - {view.target_id for view in expected_environment}
+                if uncovered:
+                    raise EnvironmentContextScopeError(
+                        f"environment context is missing for {len(uncovered)} of investigation "
+                        f"{context.investigation_id!r} target_refs"
+                    )
+                assemble_kwargs["environment_contexts"] = environment_contexts
+            assembled = self._context_assembler.assemble(
+                context,
+                capability_catalog=capability_catalog,
+                recent_tool_results=recent_tool_results,
+                **assemble_kwargs,
+            )
+            if target_contexts is not None and tuple(assembled.target_context) != target_contexts:
+                raise TargetContextScopeError(
+                    "assembled target context differs from the investigation-scoped target context"
+                )
+            if expected_environment is not None and tuple(assembled.environment_context) != expected_environment:
+                raise EnvironmentContextScopeError(
+                    "assembled environment context differs from the investigation-scoped environment context"
+                )
+            _verify_environment_context_binding(context, assembled.environment_context)
+        except (UnregisteredTargetError, TargetContextProjectionError, TargetContextScopeError) as exc:
+            self._investigations.fail(
+                investigation_id,
+                reason="target_context_unavailable",
+                details={"detail": str(exc), "type": exc.__class__.__name__},
+            )
+            return TurnResult(outcome=TurnOutcome.FAILED, detail=str(exc))
+        except (
+            EnvironmentContextUnavailableError,
+            EnvironmentContextProjectionError,
+            EnvironmentContextScopeError,
+        ) as exc:
+            self._investigations.fail(
+                investigation_id,
+                reason="environment_context_unavailable",
+                details={"detail": str(exc), "type": exc.__class__.__name__},
+            )
+            return TurnResult(outcome=TurnOutcome.FAILED, detail=str(exc))
 
         # Phase 5.5 (RG-INV-1): reject an oversized assembled context
         # BEFORE it is ever handed to the provider — ContextAssembler
         # itself stays stateless and unaware of any Resource Governance
         # concern (unmodified); measuring and enforcing is the Runtime's
         # own job, exactly like every other limit checked in this method.
-        context_size = _estimate_size_bytes(
-            {
-                "instructions": assembled.instructions,
-                "capability_catalog": list(assembled.capability_catalog),
-                "data": [{"source": entry.source, "content": entry.content} for entry in assembled.data],
-            }
-        )
+        measured = {
+            "instructions": assembled.instructions,
+            "capability_catalog": list(assembled.capability_catalog),
+            "data": [{"source": entry.source, "content": entry.content} for entry in assembled.data],
+            # Phase 5.7.3 (TC-INV-11): measured through the same canonical
+            # serialization providers will use, inside this one check —
+            # never measured separately, never added after the check.
+            "target_context": [view.as_model_mapping() for view in assembled.target_context],
+        }
+        if assembled.environment_context:
+            # Phase 5.7.6 (EC-INV-8): same rule for environment context. Added
+            # only when present, so measurement without it is byte-identical
+            # to pre-5.7.6.
+            measured["environment_context"] = [view.as_model_mapping() for view in assembled.environment_context]
+        context_size = _estimate_size_bytes(measured)
         try:
             self._governor.check_context_size(context_size)
         except ResourceLimitExceededError as exc:

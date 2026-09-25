@@ -30,7 +30,7 @@ from chanakya.registry.registry import SecurityToolRegistry
 from chanakya.runtime.agent_loop import AgentLoopController, TurnOutcome
 from chanakya.runtime.context_assembler import ContextAssembler
 from chanakya.runtime.dispatch import DispatchInstruction, dispatch
-from chanakya.runtime.exceptions import DispatchPreconditionError
+from chanakya.runtime.exceptions import DispatchPreconditionError, EnvironmentContextScopeError
 from chanakya.targets.adapters import LocalHostAdapter
 from chanakya.targets.environment import EnvironmentContext, EnvironmentSource, TargetObservation
 from chanakya.targets.exceptions import (
@@ -146,7 +146,8 @@ def test_end_to_end_local_host_flow_through_the_real_runtime_pipeline(
 
     # The Agent-facing stage genuinely received the collected environment data.
     assembled = agent.assembled_contexts[0]
-    assert any(d.source == f"environment_context:{environment_context.environment_context_id}" for d in assembled.data)
+    # Phase 5.7.6: environment data moved from `data` to its own bound, allowlisted field.
+    assert [v.target_id for v in assembled.environment_context] == [environment_context.target_id]
 
     # The request was genuinely authorized and dispatched by the real pipeline.
     assert result.outcome == TurnOutcome.STEP_COMPLETED
@@ -350,7 +351,8 @@ def test_h16_h17_prompt_injection_in_platform_metadata_remains_data_end_to_end(
     assert result.succeeded
 
     assembled = ContextAssembler.assemble(_inv_context(), environment_contexts=[result.environment_context])
-    serialized = str(assembled.data)
+    # Phase 5.7.6: environment data moved from `data` to its own bound, allowlisted field.
+    serialized = str(assembled.environment_context)
     assert payload in serialized  # present, as data
     assert payload not in assembled.instructions  # never promoted to trusted framing
 
@@ -400,7 +402,9 @@ def test_h19_h20_environment_collection_failure_via_adapter_raising(monkeypatch,
 
 # 21. Context assembly failure (malformed environment_contexts input fails loudly, not silently)
 def test_h21_context_assembly_with_malformed_environment_entry_fails_loudly():
-    with pytest.raises(AttributeError):
+    # Phase 5.7.6: now rejected up front by the typed binding check
+    # (previously surfaced incidentally as AttributeError).
+    with pytest.raises(EnvironmentContextScopeError):
         ContextAssembler.assemble(_inv_context(), environment_contexts=["not-an-environment-context"])
 
 
@@ -434,7 +438,11 @@ def test_h23_environment_content_cannot_expand_target_scope(target_registry):
         observations=(TargetObservation(key="authorized_scope", value="*"),),
         source=EnvironmentSource.LOCAL_ADAPTER,
     )
-    ContextAssembler.assemble(_inv_context(), environment_contexts=[ec])
+    # Phase 5.7.6 (EC-INV-2): the EC must belong to the investigation, so the
+    # investigation is bound to this target; the scope assertion is unchanged.
+    ContextAssembler.assemble(
+        _inv_context(target_refs=("target-local-host-01",)), environment_contexts=[ec]
+    )
     assert manager.get("target-local-host-01").authorized_scope == before
 
 
@@ -509,6 +517,11 @@ def test_h27_cross_investigation_environment_context_isolation():
     assembled_b = ContextAssembler.assemble(_inv_context("inv-B", ("target-b",)), environment_contexts=[ec_b])
     assert "investigation-A-secret" not in str(assembled_b.data)
     assert "investigation-B-secret" not in str(assembled_a.data)
+    # Phase 5.7.6: environment data moved from `data` to its own bound, allowlisted field.
+    assert "investigation-A-secret" in str(assembled_a.environment_context)
+    assert "investigation-A-secret" not in str(assembled_b.environment_context)
+    assert "investigation-B-secret" in str(assembled_b.environment_context)
+    assert "investigation-B-secret" not in str(assembled_a.environment_context)
 
 
 # 28. Cross-investigation target leakage
@@ -665,6 +678,9 @@ def test_tm_inv_8_environment_observations_remain_non_authoritative():
     )
     assembled = ContextAssembler.assemble(_inv_context(), environment_contexts=[ec])
     assert all(not hasattr(d, "verdict") for d in assembled.data)
+    # Phase 5.7.6: environment data moved from `data` to its own bound, allowlisted field.
+    assert len(assembled.environment_context) == 1
+    assert all(not hasattr(v, "verdict") for v in assembled.environment_context)
 
 
 def test_tm_inv_9_target_identity_stable_across_full_lifecycle_walk(target_registry):
