@@ -630,7 +630,12 @@ class EvidenceStore:
         evidence = self.get(evidence_id)
         if evidence.payload_hash is None:
             return None
+        return self._load_verified_payload(evidence)
 
+    def _load_verified_payload(self, evidence: Evidence) -> Mapping[str, Any]:
+        """Reads ``evidence``'s payload file from its own investigation
+        directory and checks it against ``evidence.payload_hash``. Raises
+        ``CorruptEvidenceError`` on any problem."""
         path = self._payload_path(evidence.investigation_id, evidence.evidence_id)
         try:
             raw_bytes = path.read_bytes()
@@ -657,6 +662,26 @@ class EvidenceStore:
                 f"stored={evidence.payload_hash!r}, recomputed={recomputed!r}"
             )
         return payload
+
+    def verify_in_investigation(self, investigation_id: str, evidence_id: str) -> Evidence:
+        """Phase 10. Investigation-scoped verification: reads only
+        ``<root>/<investigation_id>/<evidence_id>.json`` (never searches
+        other investigations, unlike ``get()``), re-verifies its
+        ``content_hash``, confirms the record names this investigation and
+        id, and re-verifies the payload file against ``payload_hash``.
+        Returns the metadata record only; the payload content is never
+        returned. Raises ``InvalidIdentifierError``,
+        ``UnknownEvidenceError`` (no such record in this investigation) or
+        ``CorruptEvidenceError``."""
+        path = self._record_path(investigation_id, evidence_id)
+        if not path.is_file():
+            raise UnknownEvidenceError(f"unknown evidence_id in this investigation: {evidence_id!r}")
+        evidence = self._read_and_verify(path)
+        if evidence.investigation_id != investigation_id or evidence.evidence_id != evidence_id:
+            raise CorruptEvidenceError(f"evidence record {evidence_id!r} is filed under the wrong name or investigation")
+        if evidence.payload_hash is not None:
+            self._load_verified_payload(evidence)
+        return evidence
 
     def list_by_investigation(self, investigation_id: str) -> Sequence[Evidence]:
         """Every ``Evidence`` record for ``investigation_id``, ordered

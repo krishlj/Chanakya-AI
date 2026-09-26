@@ -56,6 +56,7 @@ from chanakya.capability.reserved import (
     is_reserved_capability_name,
 )
 from chanakya.contracts.enums import SUPPORTED_CONTRACT_VERSIONS
+from chanakya.contracts.risk_taxonomy import RISK_CATEGORY_IDS
 from chanakya.runtime.clock import utcnow_iso
 from chanakya.runtime.context_assembler import AssembledContext
 from chanakya.targets.context import TargetContextView
@@ -122,6 +123,17 @@ _FINDING_TOOL_DESCRIPTION = (
     "of the results that support it. Findings are recorded as opinions grounded in that evidence."
 )
 
+#: Phase 10: fixed description of the finding ``category``. The enum is the
+#: provider-neutral rule-set taxonomy (``chanakya.contracts.risk_taxonomy``);
+#: it is a hint only. The Runtime does not trust schema conformance: a
+#: category outside it is simply not assessed, and the model supplies no
+#: risk field of any kind.
+_FINDING_CATEGORY_DESCRIPTION = (
+    "Optional. The kind of finding. Chanakya's fixed, rule-based risk assessment uses this category "
+    "together with the provenance of the cited evidence; a finding without a listed category is "
+    "recorded but not risk-assessed. You do not rate severity or risk."
+)
+
 _FINDING_TOOL_SCHEMA = {
     "type": "object",
     "properties": {
@@ -134,7 +146,11 @@ _FINDING_TOOL_SCHEMA = {
                     "title": {"type": "string", "maxLength": 200},
                     "description": {"type": "string", "maxLength": 4000},
                     "evidence_refs": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 20},
-                    "category": {"type": "string", "pattern": "^[a-z0-9_]{1,64}$"},
+                    "category": {
+                        "type": "string",
+                        "enum": list(RISK_CATEGORY_IDS),
+                        "description": _FINDING_CATEGORY_DESCRIPTION,
+                    },
                     "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
                 },
                 "required": ["title", "description", "evidence_refs"],

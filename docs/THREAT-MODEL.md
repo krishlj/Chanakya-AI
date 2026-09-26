@@ -1096,6 +1096,90 @@ existing TB-3 path, not a new trust boundary.
   bounded title, description and evidence lists; a 16 KiB record limit;
   the provider-output limit applies to the whole turn.
 
+### Candidate threats from Phase 10 (deterministic risk assessment)
+
+Findings are now rated by a deterministic, versioned Risk Engine
+(`chanakya-risk-rules/1.0.0`) and the ratings are persisted. The engine is
+trusted code with no model in the loop, so this adds a new sink behind TB-3
+and a new record behind TB-8, not a new trust boundary.
+
+- **T-45 candidate — Severity steering through category choice** (TB-3; a
+  T-06/T-07 variant). The model, possibly steered by injected evidence,
+  labels a finding with a higher-severity taxonomy category.
+  *Controls:*
+  - a closed taxonomy;
+  - category↔capability compatibility (incompatible evidence is not
+    assessed);
+  - the read-only ceiling (`critical` is unreachable);
+  - the engine never reads finding text or evidence payloads;
+  - rule ids, and both the agent's confidence and the rule-based basis
+    confidence, are shown.
+
+  *Residual:* the model can still pick the highest *compatible* category.
+- **T-46 candidate — Risk rating treated as authority or automation
+  input** (TB-4/TB-5; a T-43 variant). A future change feeds severity into
+  policy, approval defaults or auto-remediation.
+  *Controls:*
+  - static tests keep the policy, tools, registry, approval, targets,
+    capability, evidence, findings and audit packages from importing any
+    risk module;
+  - `ApprovalRequest.risk_assessment_ref` is never set (AST test);
+  - the risk path contains no Intake, Gateway, approval or dispatch call
+    (AST test);
+  - ratings are never fed back into model context.
+- **T-47 candidate — Fabricated, foreign or duplicate risk references**
+  (TB-8). A buggy or substituted assessor returns an assessment for a
+  finding that doesn't exist, belongs to another investigation, carries
+  altered evidence, or duplicates another.
+  *Controls:*
+  - the Runtime validates the whole batch before the first write: exact
+    coverage of the findings stored in the turn, the investigation
+    binding, evidence equality, the deterministic id, the category rule,
+    the ceiling and not-assessed reason consistency;
+  - deterministic ids plus exclusive create reject duplicates in storage;
+  - the provenance verifier re-checks on read.
+- **T-48 candidate — Risk-store tampering** (a T-18 variant).
+  *Controls:*
+  - append-only store with a per-record content hash;
+  - contract-consistency checks on read (a rehashed record whose
+    severity, confidence and rules disagree is corrupt);
+  - `risk_assessed` in the hash-chained Audit Log;
+  - **recomputation** by `verify_risk_provenance` catches a
+    contract-consistent forgery with a recomputed hash;
+  - the CLI withholds all ratings if verification fails.
+
+  *Residual:* a consistent rewrite of the Finding, Evidence and risk
+  stores together.
+- **T-49 candidate — Rule-set drift / irreproducible ratings.** The table
+  is edited without a version bump, so stored ratings no longer recompute.
+  *Controls:*
+  - `scoring_method` is versioned, and only a closed set of supported
+    rule sets is accepted, on write and on read;
+  - tests pin the exact table and rule-id vocabulary;
+  - verification flags recomputation mismatches.
+- **T-50 candidate — False assurance from low or absent ratings** (a T-07
+  variant; Abuse Case 1 applied to risk). Injection steers the model to
+  omit a category or pick a benign one, and the operator reads
+  "informational" or "not assessed" as "safe".
+  *Controls:*
+  - "not assessed" is shown explicitly with its reason and never as a
+    severity;
+  - the CLI states that ratings are rule-based, not independently
+    verified, and do not establish the absence of risk;
+  - basis confidence describes the evidence, not the finding.
+
+  *Residual:* human judgment.
+- **T-51 candidate — Partial state after a risk failure.** Findings are
+  stored, then assessment, storage or audit fails; some or no ratings
+  exist and the investigation is `HALTED`.
+  *Controls:*
+  - halt reasons `risk_assessment_failed` / `audit_sink_failure` are
+    shown;
+  - findings are never altered;
+  - `investigation_completed` is not emitted;
+  - verification reports a missing assessment, so the CLI shows no
+    ratings rather than a partial set.
+
 ---
 
 ## 9. Security controls (consolidated)

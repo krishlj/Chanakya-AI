@@ -22,6 +22,14 @@ logs, or stores it.
 Terminal output: everything that could carry model- or target-originated
 text (outcome details) is rendered with ``json.dumps(..., ensure_ascii=True)``.
 
+Phase 10: ``build_runtime`` also wires the deterministic Risk Engine and
+the append-only ``RiskAssessmentStore`` (``<workdir>/risk``) into the
+controller. Rule-based ratings are displayed only after
+``verify_risk_provenance`` recomputes every stored assessment; they are
+labeled as rule-based, shown apart from the agent's own confidence, and a
+finding the rules cannot rate is shown as "not assessed". The rule set is
+not configurable here.
+
 Known gaps (deferred): the Agent's explanation text is not shown
 (``TurnResult`` does not carry it); investigation state is in memory only
 (Evidence and the Audit Log are durable); no justification is collected
@@ -53,6 +61,7 @@ from chanakya.providers.anthropic_provider import AnthropicProvider
 from chanakya.providers.config import ProviderConfig
 from chanakya.registry.bootstrap import production_registry_entries
 from chanakya.registry.registry import SecurityToolRegistry
+from chanakya.risk import RiskAssessmentStore, RiskEngine, StoreEvidenceFactsReader, verify_risk_provenance
 from chanakya.runtime.agent_loop import AgentLoopController, AgentProvider, TurnOutcome, TurnResult
 from chanakya.runtime.audit import AuditEmitter
 from chanakya.runtime.clock import utcnow_iso
@@ -101,6 +110,8 @@ class CliRuntime:
     audit_log: FilesystemAuditLog
     evidence_store: EvidenceStore
     finding_store: FindingStore
+    risk_store: RiskAssessmentStore
+    risk_engine: RiskEngine
     approval_provider: TerminalApprovalProvider
     target_id: str
     approver: str
@@ -173,6 +184,8 @@ def build_runtime(
 
     evidence_store = EvidenceStore(workdir / "evidence")
     finding_store = FindingStore(workdir / "findings")
+    risk_store = RiskAssessmentStore(workdir / "risk")
+    risk_engine = RiskEngine(StoreEvidenceFactsReader(evidence_store))
     audit_log = FilesystemAuditLog(workdir / "audit")
     audit = AuditEmitter(audit_log)
 
@@ -189,6 +202,8 @@ def build_runtime(
         audit=audit,
         target_context_source=target_manager,
         finding_recorder=finding_store,
+        risk_assessor=risk_engine,
+        risk_recorder=risk_store,
     )
     return CliRuntime(
         registry=registry,
@@ -199,6 +214,8 @@ def build_runtime(
         audit_log=audit_log,
         evidence_store=evidence_store,
         finding_store=finding_store,
+        risk_store=risk_store,
+        risk_engine=risk_engine,
         approval_provider=approval_provider,
         target_id=LOCAL_TARGET_ID,
         approver=approval_provider.approver,
@@ -276,23 +293,59 @@ def run_investigation(
         + (f" (reason: {_safe(reason)})" if reason else "")
         + f"\nevidence records: {len(context.evidence_refs)}\n"
     )
-    _report_findings(output, runtime.finding_store, context.investigation_id)
+    _report_findings(output, runtime, context.investigation_id)
     output.flush()
     return context, interrupted
 
 
-def _report_findings(output: TextIO, store: FindingStore, investigation_id: str) -> None:
-    """Shows the stored, verified findings. All finding text is model-
-    authored and untrusted, so every value is rendered escaped."""
-    findings = store.list_by_investigation(investigation_id)
+_RISK_HEADER = (
+    "risk ratings are computed by fixed rules from the agent's category and evidence provenance; "
+    "they are not independently verified and do not establish the absence of risk\n"
+)
+
+
+def _report_findings(output: TextIO, runtime: CliRuntime, investigation_id: str) -> None:
+    """Shows the stored, verified findings and, under each, its Phase 10
+    rule-based risk assessment. All finding text is model-authored and
+    untrusted, so every value is rendered escaped. Ratings are shown only
+    after ``verify_risk_provenance`` has recomputed and matched every stored
+    assessment; otherwise none is shown. The agent's own confidence and the
+    rule-based rating are shown separately, never blended."""
+    findings = runtime.finding_store.list_by_investigation(investigation_id)
     output.write(f"findings: {len(findings)} (agent opinions grounded in evidence; not verified facts)\n")
+    report = verify_risk_provenance(
+        investigation_id,
+        risk_store=runtime.risk_store,
+        finding_store=runtime.finding_store,
+        engine=runtime.risk_engine,
+    )
+    if findings or not report.verified:
+        output.write(_RISK_HEADER)
+    if not report.verified:
+        output.write("risk assessments: failed verification; not shown\n")
     for number, finding in enumerate(findings, start=1):
         output.write(
             f"  [{number}] {_safe(finding.title)}\n"
-            f"      confidence: {_safe(finding.confidence)}  category: {_safe(finding.category)}\n"
-            f"      evidence: {_safe(list(finding.evidence_refs))}\n"
+            f"      agent-reported confidence: {_safe(finding.confidence)}  category: {_safe(finding.category)}\n"
+            + _risk_lines(report, finding.finding_id)
+            + f"      evidence: {_safe(list(finding.evidence_refs))}\n"
             f"      {_safe_full(finding.description)}\n"
         )
+
+
+def _risk_lines(report: Any, finding_id: str) -> str:
+    if not report.verified:
+        return "      rule-based risk: not shown (failed verification)\n"
+    assessment = report.assessments.get(finding_id)
+    if assessment is None:
+        reason = report.not_assessed.get(finding_id, "unavailable")
+        return f"      rule-based risk: not assessed ({_safe(reason)})\n"
+    return (
+        f"      rule-based risk ({_safe(assessment.scoring_method)}):\n"
+        f"          severity: {_safe(assessment.severity.value)}\n"
+        f"          basis confidence: {_safe(assessment.confidence)}\n"
+        f"          rules: {_safe_full(list(assessment.rule_ids))}\n"
+    )
 
 
 def _parser() -> argparse.ArgumentParser:

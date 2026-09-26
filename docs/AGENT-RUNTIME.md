@@ -838,7 +838,7 @@ happy-path flow):
 | Dispatcher begins/ends a call | `dispatch_started` / `dispatch_completed` / `dispatch_failed` |
 | `Evidence` written | `evidence_recorded` |
 | `Finding` stored | `finding_created` |
-| `RiskAssessment` stored (Risk Engine — future phase) | `risk_assessed` |
+| `RiskAssessment` stored (Phase 10, actor `system`) | `risk_assessed` |
 | `Recommendation` stored | `recommendation_created` |
 | Investigation reaches `completed` | `investigation_completed` |
 | Investigation reaches `halted` (including cancellation, timeout, budget exhaustion) | `investigation_halted` |
@@ -1358,6 +1358,120 @@ non-dispatchable tool name, `report_findings`
 | FND-INV-8 | Finding text shown in the terminal is escaped. | `test_cli_hostile_finding_text_is_inert_and_escaped` |
 | FND-INV-9 | No capability can take the reserved channel name. | `test_registry_refuses_the_reserved_name`, `test_caller_supplied_catalog_cannot_shadow_the_channel` |
 
+#### Deterministic risk assessment (Phase 10)
+
+Implemented. On a conclude turn whose findings were stored, the Agent
+Loop Controller rates them before completing the investigation:
+
+```
+conclude → _record_findings (unchanged) → _assess_risk → complete
+```
+
+**Boundary.** The Runtime never computes a rating (SR-18). It calls an
+injected `RiskAssessor` and stores through an injected
+`RiskAssessmentRecorder`, both Protocols in `agent_loop.py`, and imports
+only `chanakya.contracts.risk_assessment` / `risk_taxonomy`, never
+`chanakya.risk`.
+- The CLI composition root wires `chanakya.risk.RiskEngine` and
+  `RiskAssessmentStore`.
+- With neither configured, conclude behaves exactly as in Phase 9.
+- Configuring only one is a `ValueError` at construction.
+
+**Engine.** `chanakya.risk.RiskEngine` applies rule set
+`chanakya-risk-rules/1.0.0` (`docs/CONTRACTS.md` §9).
+- **Finding input.** From each Finding it reads only `finding_id`,
+  `investigation_id`, `category` and `evidence_refs`.
+- **Evidence input.** It receives cited Evidence only as `EvidenceFacts`
+  (id, investigation, capability, classification), through
+  `StoreEvidenceFactsReader`. That reader uses the new, investigation-scoped
+  `EvidenceStore.verify_in_investigation`: record hash, id/investigation
+  match and payload hash, with no payload content returned.
+- **Integrity first.** Every cited Evidence of every Finding is verified
+  before any Finding is rated, so an integrity failure cannot hide behind
+  "not assessed".
+- **Determinism.** The engine is pure: only `assessed_at` varies.
+
+**Validation before any write** (`_validate_risk_result`):
+- The result must be a `RiskEngineResult`.
+- Every assessment is rebuilt from its dict, so the contract is
+  re-checked even for an object altered after construction. That check
+  covers the rule-set shape, the deterministic id, severity/confidence
+  consistency and the ceiling.
+- Every stored-this-turn Finding appears exactly once, assessed or not
+  assessed, and nothing else appears. That rejects unknown, foreign and
+  duplicate references and more than 20 results.
+- Each assessment must belong to this investigation, carry exactly its
+  Finding's `evidence_refs` (all recorded in this investigation), rate
+  that Finding's category, and stay at or below `high`.
+- A `category_unrated` reason is accepted only for a Finding whose
+  category is really outside the taxonomy, and `evidence_incompatible`
+  only for one inside it.
+
+Only then is anything appended. Per assessment:
+`RiskAssessmentStore.append` → `add_risk_assessment_ref` →
+`risk_assessed` audit event (`actor=system`; `related_ids`
+risk_assessment_id and finding_id; `details` evidence_refs, severity,
+confidence, scoring_method and rule_ids; never the rationale or any
+finding text). Then `complete()`.
+
+**Outcomes:**
+- **Not assessed** (`category_unrated`, `evidence_incompatible`) is not a
+  failure. The investigation completes and no audit event is written for
+  that Finding.
+- **Halt on failure.** An engine error, an Evidence integrity failure, a
+  validation failure or a storage failure →
+  `halt(reason="risk_assessment_failed")`, turn outcome `HALTED`.
+  - No `investigation_completed` is emitted.
+  - Stored Findings are never altered or removed.
+  - A storage failure mid-batch leaves the earlier assessments durable,
+    the same append-only posture as findings.
+- **Audit failure.** A failure writing `risk_assessed` takes the existing
+  backstop: `AuditSinkError` → `HALTED` (`audit_sink_failure`).
+
+**Provider.** No risk channel, no new conclusion type, no risk fields.
+- The `report_findings` schema's `category` became an `enum` of
+  `RISK_CATEGORY_IDS`, with a fixed description saying it feeds rule-based
+  assessment and that the model does not rate severity.
+- That enum is a hint only: a category outside it is stored if otherwise
+  valid and is rated `category_unrated`.
+
+**Provenance and display.**
+- `chanakya.risk.verify_risk_provenance` walks RiskAssessment → Finding →
+  Evidence → payload and re-runs the engine. A rewritten and rehashed
+  assessment fails recomputation, and so does a missing one.
+- The CLI shows ratings only when that verification passes, labeled
+  "rule-based risk (chanakya-risk-rules/1.0.0)" apart from the
+  "agent-reported confidence". Otherwise it prints "risk assessments:
+  failed verification; not shown".
+- A finding that could not be rated is shown as
+  `rule-based risk: not assessed (<reason>)`.
+
+| ID | Invariant | Tests |
+|---|---|---|
+| RA-INV-1 | A RiskAssessment never reaches Intake, the Policy Gateway, approval, dispatch or a ToolExecutor, and grants no authority. | `test_risk_path_creates_no_policy_decision_approval_or_dispatch`, `test_runtime_risk_path_calls_no_intake_policy_approval_or_dispatch`, `test_authority_and_storage_packages_never_import_risk`, `test_approval_request_risk_reference_is_never_set` |
+| RA-INV-2 | Ratings come only from the deterministic Risk Engine; no model output becomes an RA field. | `test_no_risk_channel_or_risk_fields_are_offered_to_the_model`, `test_model_supplied_severity_on_a_finding_never_becomes_a_rating`, `test_assessment_fields_are_engine_owned` |
+| RA-INV-3 | Same Finding, Evidence and rule set → identical id, severity, confidence, rule ids and rationale. | `test_same_inputs_give_identical_assessments_with_different_clocks`, `test_fresh_engine_and_reader_reproduce_the_assessment`, `test_deterministic_id_is_stable_and_input_sensitive` |
+| RA-INV-4 | Every RA references exactly one Finding of its own investigation stored in the same conclude turn, with that Finding's evidence. | `test_invalid_engine_output_halts_and_stores_nothing` (fabricated/foreign/missing/duplicate/evidence cases), `test_assessment_for_an_unknown_finding_fails` |
+| RA-INV-5 | The engine reads no free text and no payload content. | `test_engine_reads_only_the_four_permitted_finding_fields`, `test_hostile_finding_text_has_no_effect`, `test_hostile_evidence_payload_has_no_effect`, `test_store_reader_never_returns_payload_content` |
+| RA-INV-6 | `Finding.confidence` is never an input to RiskAssessment confidence. | `test_finding_confidence_never_changes_the_assessment` |
+| RA-INV-7 | Malformed, unsupported or unverifiable input fails closed; integrity failures are never "not assessed". | `test_evidence_corruption_is_a_failure_not_not_assessed`, `test_metadata_tampering_fails_closed_even_for_unrated_categories`, `test_engine_exception_halts_and_findings_survive` |
+| RA-INV-8 | Risk storage is append-only, hash-verified and duplicate-resistant. | `test_store_has_no_mutation_api`, `test_duplicate_assessment_collides_and_never_overwrites`, `test_tampered_record_is_detected`, `test_tampered_and_rehashed_contract_violations_are_still_detected` |
+| RA-INV-9 | Every stored RA has exactly one `risk_assessed` event with ids and enums only. | `test_rated_finding_is_assessed_stored_audited_then_completed`, `test_mixed_batch_stores_only_rated_findings_one_event_each`, `test_audit_failure_halts_with_audit_sink_failure` |
+| RA-INV-10 | No authority-shaped content; severity never exceeds the rule-set ceiling. | `test_authority_shaped_keys_are_rejected`, `test_critical_is_unreachable_under_v1_for_every_category_and_rule_shape`, `test_invalid_engine_output_halts_and_stores_nothing[critical_for_read_only]` |
+| RA-INV-11 | The CLI renders risk escaped, apart from agent confidence, and withholds ratings that fail verification. | `test_cli_rates_stores_audits_and_displays_a_rated_finding`, `test_cli_withholds_ratings_that_fail_verification`, `test_cli_risk_output_is_escaped_with_hostile_finding_text`, `test_cli_shows_not_assessed_explicitly_and_never_as_safe` |
+| RA-INV-12 | Phase 9 FND-INV-1..9 are unchanged; a risk failure never alters or removes a Finding. | the unchanged `tests/test_findings.py`, `test_invalid_engine_output_halts_and_stores_nothing` (findings still verify), `test_storage_failure_on_first_append_halts_without_completion` |
+
+**Limitations.**
+- **What a rating means.** It reflects the category and the provenance of
+  the evidence, not the truth of the Finding. A low or absent rating does
+  not establish the absence of risk.
+- **Category choice.** The model still chooses a Finding's category and
+  can pick the highest compatible one (T-45).
+- **Local attacker.** A consistent rewrite of the Finding, Evidence and
+  RiskAssessment stores defeats recomputation (T-48, T-18).
+- **Partial state.** An RA written before a failed `risk_assessed` event
+  stays durable without its event.
+
 **`RuntimeExecutionLimits`** — admin-controlled configuration (trusted,
 versioned, not Agent-writable), analogous to `PolicySet`.
 
@@ -1440,7 +1554,7 @@ Never includes a credential (RT-INV-11); never visible to the Agent.
 | SR-13, SR-14 | No credential ever placed on any Runtime-internal object (RT-INV-11); the Runtime itself never resolves one |
 | SR-15, SR-16 | Context Assembler wraps tool/target output as data (RT-INV-7); `AgentTurnOutput`/`ToolRequest` always schema-validated before use |
 | SR-17 | `Finding` storage rejects empty `evidence_refs` before it ever reaches `InvestigationContext` |
-| SR-18 | `RiskAssessment` handling is pass-through/storage only — the Runtime never computes or overrides one itself (Risk Engine's job, future phase) |
+| SR-18 | `RiskAssessment` handling is validation/storage only — the Runtime never computes or overrides one itself. The deterministic Risk Engine (`chanakya.risk`, Phase 10) is injected as a `RiskAssessor`; the Runtime only validates its output against the Findings it stored |
 | SR-19 | `Recommendation`s are stored, displayed, and never auto-dispatched — a new `ToolRequest` always re-enters the full pipeline |
 | SR-20 | Timeout Supervisor + Resource Governor (§10, §18) |
 | SR-21 | Runtime does not alter or escalate `required_privileges`; it only observes the Gateway's existing SR-21 check |

@@ -233,6 +233,36 @@ reproducible and inspectable: given the same findings and the same rules,
 the same risk assessment results. The Risk Engine may take an Agent's
 suggested severity as one input but is not required to accept it verbatim.
 
+**Status (Phase 10):** a deterministic Risk Engine is implemented
+(`chanakya.risk`, rule set `chanakya-risk-rules/1.0.0`).
+
+- **What it rates, and from what.** It rates each Finding stored in a
+  conclude turn, using only:
+  - the Finding's category, which must be in a closed taxonomy;
+  - the verified provenance (capability, classification) of the Evidence
+    the Finding cites.
+
+  It never reads finding text, the agent's confidence, evidence payloads,
+  tool output or target data. The model supplies no rating and no
+  suggested severity: this phase uses none of the latitude the paragraph
+  above allows.
+- **Where it runs.** The Runtime calls it through an injected Protocol
+  after findings are stored and before the investigation completes. The
+  Runtime validates the whole result, then stores it append-only
+  (`RiskAssessmentStore`) and records one `risk_assessed` audit event per
+  assessment. Any failure halts the investigation
+  (`risk_assessment_failed`). A finding the rules cannot rate is shown as
+  "not assessed", never given a default.
+- **Display.** The CLI shows a rating only after
+  `verify_risk_provenance` recomputes every stored assessment from its
+  Finding and Evidence.
+- **Authority.** A rating is prioritization, not fact and not authority.
+  Nothing in the Policy Gateway, approval, dispatch, the Registry or the
+  Tool Layer reads it.
+
+See `docs/CONTRACTS.md` §9 and `docs/AGENT-RUNTIME.md` "Deterministic risk
+assessment (Phase 10)".
+
 ## 12. AI Analysis Layer
 
 The Agent's evidence-correlation function: reads accumulated `Evidence`
@@ -257,8 +287,9 @@ separable.
 - **Authority.** Findings are opinions: they authorize and trigger
   nothing.
 
-The Risk Engine (§11) and Recommendations are not implemented. See
-`docs/AGENT-RUNTIME.md` "Evidence-grounded findings (Phase 9)".
+Phase 10 adds rule-based risk assessment of these findings (§11).
+Recommendations are not implemented. See `docs/AGENT-RUNTIME.md`
+"Evidence-grounded findings (Phase 9)".
 
 ## 13. Human Approval Mechanism
 

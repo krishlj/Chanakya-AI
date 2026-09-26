@@ -549,6 +549,75 @@ itself (which is interpretation): a risk assessment is prioritization.
 - `scoring_method` required — a score without a named method is invalid,
   since reproducibility is a stated architectural requirement.
 
+**Implementation (Phase 10):** `chanakya/contracts/risk_assessment.py`,
+rule-set data in `chanakya/contracts/risk_taxonomy.py`, engine in
+`chanakya/risk/`.
+
+- **Amendments to the fields above.**
+  - Added, all required: `investigation_id` (the owning investigation),
+    `evidence_refs` (exactly the Finding's `evidence_refs`, same order),
+    `rule_ids` (the rules applied, from a closed vocabulary) and
+    `assessed_by` (always `risk_engine`).
+  - `rationale` is now required. It is engine-template text built only
+    from rule ids, the taxonomy category id and Registry capability ids:
+    one line, at most 1000 characters, no control characters, and it
+    passes the Finding credential screen.
+  - `finding_refs` holds exactly one `finding_id` in v1.
+  - `mitigations_suggested` is not supported (deferred to
+    Recommendations); a record carrying it is rejected.
+- **Who sets what.** No field comes from the model.
+  - The engine derives `risk_assessment_id`, `severity`, `confidence`,
+    `rule_ids`, `rationale` and `assessed_by`.
+  - The Runtime supplies `assessed_at`.
+  - `investigation_id`, `finding_refs` and `evidence_refs` are copied
+    from the stored Finding and re-checked by the Runtime.
+- **Deterministic id.** `risk_assessment_id` is
+  `uuid5(0f8d4a4c-89ad-5e05-b0d1-4b1023a25e9c, "<investigation_id>:<finding_id>:<scoring_method>")`.
+  A second assessment of the same finding under the same rule set has the
+  same id, and the append-only store refuses it.
+- **Rule set `chanakya-risk-rules/1.0.0`.** It is the only supported
+  `scoring_method`; an unknown one is invalid, including in a stored
+  record.
+
+  | Category | Base severity | Compatible capability |
+  |---|---|---|
+  | `network_exposure` | medium | `list_listening_ports` |
+  | `unexpected_listener` | low | `list_listening_ports` |
+  | `service_inventory` | informational | `list_listening_ports` |
+  | `platform_configuration` | low | `observe_local_host_environment` |
+  | `unsupported_platform_version` | medium | `observe_local_host_environment` |
+  | `observation` | informational | any registered capability |
+
+  1. A Finding with no category, or one outside this table, is **not
+     assessed** (`category_unrated`). No default severity is guessed.
+  2. Every cited Evidence must verify inside the Finding's own
+     investigation (record hash and payload hash). A failure raises; it
+     is never "not assessed".
+  3. If no cited Evidence comes from a compatible capability, the Finding
+     is **not assessed** (`evidence_incompatible`).
+  4. Severity is the category's base severity.
+  5. If every cited Evidence is `read_only`, severity is capped at `high`,
+     so `critical` is unreachable under 1.0.0.
+  6. Confidence describes the evidentiary basis only and ignores
+     `Finding.confidence`:
+     - `high`: all cited Evidence is compatible and comes from at least
+       two distinct capabilities;
+     - `medium`: all cited Evidence is compatible;
+     - `low`: only some is.
+
+  `rule_ids` has the canonical shape `evidence.verified`,
+  `category.<id>`, `compat.all|compat.partial`, optional
+  `ceiling.read_only`, `confidence.<level>`. The contract rejects any
+  record whose severity, confidence and rules are inconsistent with the
+  rule set.
+- **Not a claim of truth, not authority.**
+  - The rating describes the kind of claim and the provenance of the
+    evidence behind it. It does not verify that the Finding is correct,
+    and a low or absent rating does not mean there is no risk.
+  - Nothing in the Policy Gateway, Intake, approval, dispatch, the
+    Registry or the Tool Layer reads a RiskAssessment.
+  - `ApprovalRequest.risk_assessment_ref` stays unset.
+
 **Security considerations**
 - Must be rendered by every consumer as an assessment/opinion label,
   visually and structurally distinct from `Evidence`.

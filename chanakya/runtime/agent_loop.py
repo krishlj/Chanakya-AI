@@ -42,6 +42,17 @@ from chanakya.contracts.evidence import Evidence
 from chanakya.contracts.investigation_context import InvestigationContext, InvestigationStatus
 from chanakya.contracts.finding import Finding, FindingValidationError
 from chanakya.contracts.policy_decision import PolicyDecision
+from chanakya.contracts.risk_assessment import (
+    MAX_RISK_ASSESSMENTS_PER_INVESTIGATION,
+    NOT_ASSESSED_CATEGORY_UNRATED,
+    NotAssessedFinding,
+    RiskAssessment,
+    RiskAssessmentValidationError,
+    RiskEngineResult,
+    derive_risk_assessment_id,
+    severity_rank,
+)
+from chanakya.contracts.risk_taxonomy import READ_ONLY_SEVERITY_CEILING, RISK_TAXONOMY_V1
 from chanakya.contracts.tool_request import MalformedRequestError, ToolRequest
 from chanakya.contracts.tool_result import ToolResult, ToolResultStatus
 from chanakya.policy.gateway import EvaluationContext
@@ -187,6 +198,73 @@ class FindingRecorder(Protocol):
         ...
 
 
+class RiskAssessor(Protocol):
+    """Phase 10. The deterministic Risk Engine (``chanakya.risk.RiskEngine``
+    satisfies this). Rates the Findings stored in one conclude turn; the
+    Runtime never computes a rating itself (docs/AGENT-RUNTIME.md SR-18)."""
+
+    def assess(self, investigation_id: str, findings: Sequence[Finding], *, assessed_at: str) -> RiskEngineResult:
+        ...
+
+
+class RiskAssessmentRecorder(Protocol):
+    """Phase 10. Durable, append-only RiskAssessment storage
+    (``chanakya.risk.RiskAssessmentStore`` satisfies this)."""
+
+    def append(self, risk_assessment: RiskAssessment) -> None:
+        ...
+
+
+def _validate_risk_result(
+    investigation_id: str,
+    context: InvestigationContext,
+    findings: Tuple[Finding, ...],
+    result: Any,
+) -> Tuple[RiskAssessment, ...]:
+    """Phase 10. Checks a Risk Engine result against the Findings stored in
+    this conclude turn before anything is stored. Raises
+    ``RiskAssessmentValidationError``; never repairs.
+
+    Every assessment is rebuilt from its dict, so an object altered after
+    construction is re-validated against the contract (rule-set shape,
+    deterministic id, severity ceiling)."""
+    if not isinstance(result, RiskEngineResult):
+        raise RiskAssessmentValidationError("risk assessor returned an unexpected type")
+    try:
+        assessments = tuple(RiskAssessment.from_dict(ra.to_dict()) for ra in result.assessments)
+        not_assessed = tuple(NotAssessedFinding(n.finding_id, n.reason) for n in result.not_assessed)
+    except RiskAssessmentValidationError:
+        raise
+    except Exception:
+        raise RiskAssessmentValidationError("risk assessor returned a malformed assessment") from None
+    if len(assessments) + len(not_assessed) > MAX_RISK_ASSESSMENTS_PER_INVESTIGATION:
+        raise RiskAssessmentValidationError("risk assessor returned too many results")
+    by_id = {finding.finding_id: finding for finding in findings}
+    covered = [ra.finding_id for ra in assessments] + [item.finding_id for item in not_assessed]
+    if len(set(covered)) != len(covered) or set(covered) != set(by_id):
+        raise RiskAssessmentValidationError(
+            "risk assessor must cover every finding stored in this turn exactly once, and nothing else"
+        )
+    recorded = set(context.evidence_refs)
+    for ra in assessments:
+        finding = by_id[ra.finding_id]
+        if ra.investigation_id != investigation_id or finding.investigation_id != investigation_id:
+            raise RiskAssessmentValidationError("risk assessment belongs to another investigation")
+        if ra.evidence_refs != finding.evidence_refs or not set(ra.evidence_refs) <= recorded:
+            raise RiskAssessmentValidationError("risk assessment evidence differs from its finding's evidence")
+        if ra.risk_assessment_id != derive_risk_assessment_id(investigation_id, ra.finding_id, ra.scoring_method):
+            raise RiskAssessmentValidationError("risk assessment id is not the deterministic id")
+        if ra.rule_ids[1] != f"category.{finding.category}":
+            raise RiskAssessmentValidationError("risk assessment does not rate its finding's category")
+        if severity_rank(ra.severity.value) > severity_rank(READ_ONLY_SEVERITY_CEILING):
+            raise RiskAssessmentValidationError("risk assessment severity exceeds the rule-set ceiling")
+    for item in not_assessed:
+        rated = by_id[item.finding_id].category in RISK_TAXONOMY_V1
+        if (item.reason == NOT_ASSESSED_CATEGORY_UNRATED) == rated:
+            raise RiskAssessmentValidationError("not-assessed reason does not match the finding's category")
+    return assessments
+
+
 #: Phase 9: the most findings one investigation may record.
 MAX_FINDINGS_PER_INVESTIGATION = 20
 
@@ -246,6 +324,8 @@ class AgentLoopController:
         target_context_source: Optional[TargetContextSource] = None,
         environment_context_source: Optional[EnvironmentContextSource] = None,
         finding_recorder: Optional[FindingRecorder] = None,
+        risk_assessor: Optional[RiskAssessor] = None,
+        risk_recorder: Optional[RiskAssessmentRecorder] = None,
         clock=utcnow_iso,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
@@ -271,6 +351,13 @@ class AgentLoopController:
         # Phase 9: optional. With None, a conclude turn that carries
         # findings fails the investigation instead of dropping them.
         self._finding_recorder = finding_recorder
+        # Phase 10: both or neither. With neither, conclude behaves exactly
+        # as in Phase 9. A rating that could not be stored, or a store with
+        # nothing to rate, is a composition error.
+        if (risk_assessor is None) != (risk_recorder is None):
+            raise ValueError("risk_assessor and risk_recorder must be configured together")
+        self._risk_assessor = risk_assessor
+        self._risk_recorder = risk_recorder
         self._clock = clock
         self._sleep = sleep
 
@@ -493,9 +580,13 @@ class AgentLoopController:
 
         if turn_output.next_action == NextAction.CONCLUDE:
             if turn_output.findings:
-                ended = self._record_findings(investigation_id, context, turn_output.findings)
+                ended, stored = self._record_findings(investigation_id, context, turn_output.findings)
                 if ended is not None:
                     return ended
+                if self._risk_assessor is not None:
+                    ended = self._assess_risk(investigation_id, context, stored)
+                    if ended is not None:
+                        return ended
             self._investigations.complete(investigation_id)
             return TurnResult(outcome=TurnOutcome.CONCLUDED)
 
@@ -505,11 +596,12 @@ class AgentLoopController:
 
     def _record_findings(
         self, investigation_id: str, context: InvestigationContext, raw_findings: Sequence[Mapping[str, Any]]
-    ) -> Optional[TurnResult]:
+    ) -> Tuple[Optional[TurnResult], Tuple[Finding, ...]]:
         """Validates every proposed finding and resolves its evidence
-        references before storing any of them. Returns ``None`` when all
-        were stored (the caller then completes the investigation), or the
-        ``TurnResult`` that ends this turn instead.
+        references before storing any of them. Returns ``(None, stored)``
+        when all were stored (the caller then assesses risk, if configured,
+        and completes the investigation), or ``(TurnResult, ())`` when this
+        turn ends instead.
 
         Findings never reach Intake, the Policy Gateway, approval or
         dispatch; nothing here can authorize or trigger an action."""
@@ -518,12 +610,15 @@ class AgentLoopController:
             self._investigations.fail(
                 investigation_id, reason="finding_store_unavailable", details={"finding_count": len(raw_findings)}
             )
-            return TurnResult(outcome=TurnOutcome.FAILED, detail="findings reported but no finding store is configured")
+            return (
+                TurnResult(outcome=TurnOutcome.FAILED, detail="findings reported but no finding store is configured"),
+                (),
+            )
         try:
             findings = self._build_findings(investigation_id, context, raw_findings)
         except FindingValidationError as exc:
             # Model-caused: nothing stored, investigation keeps running.
-            return TurnResult(outcome=TurnOutcome.MALFORMED_TURN, detail=str(exc))
+            return TurnResult(outcome=TurnOutcome.MALFORMED_TURN, detail=str(exc)), ()
 
         for finding in findings:
             try:
@@ -536,10 +631,48 @@ class AgentLoopController:
                     reason="finding_recording_failed",
                     details={"detail": str(exc), "type": exc.__class__.__name__},
                 )
-                return TurnResult(outcome=TurnOutcome.HALTED, detail=str(exc))
+                return TurnResult(outcome=TurnOutcome.HALTED, detail=str(exc)), ()
             context.add_finding_ref(finding.finding_id)
             self._audit.finding_created(investigation_id, finding.finding_id, finding.evidence_refs)
+        return None, findings
+
+    # -- Phase 10: deterministic risk assessment (conclude turns only) -----
+
+    def _assess_risk(
+        self, investigation_id: str, context: InvestigationContext, findings: Tuple[Finding, ...]
+    ) -> Optional[TurnResult]:
+        """Rates the Findings just stored, through the injected Risk Engine,
+        validates the whole result, then stores and audits each assessment.
+        Returns ``None`` so the caller completes the investigation, or the
+        ``TurnResult`` that ends this turn instead.
+
+        Stored Findings are never altered or removed here. Any engine,
+        integrity, validation or storage failure halts the investigation
+        (``risk_assessment_failed``); an audit failure reaches the
+        fail-closed backstop (``audit_sink_failure``). Not-assessed
+        Findings are not a failure. Risk assessments never reach Intake,
+        the Policy Gateway, approval or dispatch."""
+        try:
+            result = self._risk_assessor.assess(investigation_id, findings, assessed_at=self._clock())
+            assessments = _validate_risk_result(investigation_id, context, findings, result)
+        except Exception as exc:
+            return self._halt_risk_assessment(investigation_id, exc)
+        for risk_assessment in assessments:
+            try:
+                self._risk_recorder.append(risk_assessment)
+            except Exception as exc:
+                return self._halt_risk_assessment(investigation_id, exc)
+            context.add_risk_assessment_ref(risk_assessment.risk_assessment_id)
+            self._audit.risk_assessed(investigation_id, risk_assessment)
         return None
+
+    def _halt_risk_assessment(self, investigation_id: str, exc: Exception) -> TurnResult:
+        self._investigations.halt(
+            investigation_id,
+            reason="risk_assessment_failed",
+            details={"detail": str(exc), "type": exc.__class__.__name__},
+        )
+        return TurnResult(outcome=TurnOutcome.HALTED, detail=str(exc))
 
     def _build_findings(
         self, investigation_id: str, context: InvestigationContext, raw_findings: Sequence[Mapping[str, Any]]

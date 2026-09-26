@@ -30,6 +30,7 @@ from typing import Any, List, Mapping, Optional, Protocol
 from chanakya.contracts.approval import ApprovalRequest
 from chanakya.contracts.audit_event import AuditEvent, AuditEventType, AuditSeverity
 from chanakya.contracts.policy_decision import PolicyDecision
+from chanakya.contracts.risk_assessment import RiskAssessment
 from chanakya.contracts.tool_result import ToolResult
 
 from .clock import utcnow_iso
@@ -278,4 +279,25 @@ class AuditEmitter:
             investigation_id=investigation_id,
             related_ids={"finding_id": finding_id},
             details={"evidence_refs": list(evidence_refs)},
+        )
+
+    def risk_assessed(self, investigation_id: str, risk_assessment: RiskAssessment, *, actor: str = "system") -> AuditEvent:
+        """Phase 10. Records that a RiskAssessment was stored. The actor is
+        ``system``: the rating comes from the deterministic Risk Engine, not
+        the agent. Ids and enum values only; the rationale is never copied."""
+        return self._emit(
+            AuditEventType.RISK_ASSESSED,
+            actor=actor,
+            investigation_id=investigation_id,
+            related_ids={
+                "risk_assessment_id": risk_assessment.risk_assessment_id,
+                "finding_id": risk_assessment.finding_id,
+            },
+            details={
+                "evidence_refs": list(risk_assessment.evidence_refs),
+                "severity": risk_assessment.severity.value,
+                "confidence": risk_assessment.confidence,
+                "scoring_method": risk_assessment.scoring_method,
+                "rule_ids": list(risk_assessment.rule_ids),
+            },
         )
