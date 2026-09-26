@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, FrozenSet, List, Mapping, Optional
 
+from chanakya.capability.envelope import envelope_from_registry_entry
 from chanakya.capability.model import PermissionLevel, derive_permission_level
 from chanakya.contracts.enums import Classification, RiskCategory, Verdict
 from chanakya.contracts.policy_decision import PolicyDecision
@@ -274,6 +275,11 @@ class PolicyGateway:
             # same RegistryEntry already resolved once, above, to produce
             # `verdict`; no new Registry lookup is introduced here.
             classification=entry.classification if entry is not None else None,
+            # Phase 11 (D-1): the execution envelope, derived from this same
+            # `entry` — the Registry state this decision authorized. A
+            # construction failure (unsupported output schema, bad limits)
+            # raises here and `evaluate` turns it into a fail-closed deny.
+            capability_envelope=envelope_from_registry_entry(entry) if entry is not None else None,
         )
 
     def _deny(self, tool_request_id: str, matched_rule: str, reason: str) -> PolicyDecision:

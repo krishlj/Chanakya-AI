@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from chanakya.capability.envelope import CapabilityEnvelope
 from chanakya.capability.model import ActionType, PermissionLevel
 from chanakya.contracts.approval import ApprovalDecisionValue
 from chanakya.contracts.enums import Classification, RiskCategory, Verdict
@@ -142,6 +143,13 @@ def make_instruction(
     investigation_id: str = "inv-1",
     resolved_timeout_seconds: int = 10,
 ) -> DispatchInstruction:
+    # Phase 11: the Tool Layer runs a handler only under an authorized
+    # capability envelope. These unit tests exercise the executor directly,
+    # so they supply a permissive one (any object, 64 KiB) for the capability.
+    envelope = CapabilityEnvelope(
+        capability=capability, output_schema={"type": "object"}, max_output_bytes=65536,
+        timeout_seconds=resolved_timeout_seconds,
+    )
     return DispatchInstruction(
         investigation_id=investigation_id,
         tool_request_id=tool_request_id,
@@ -149,9 +157,10 @@ def make_instruction(
         target_ref=target_ref,
         parameters=parameters if parameters is not None else {},
         resolved_timeout_seconds=resolved_timeout_seconds,
-        resolved_resource_limits={},
+        resolved_resource_limits={"max_output_bytes": envelope.max_output_bytes},
         policy_decision_id=policy_decision_id,
         attempt_number=1,
+        capability_envelope=envelope,
     )
 
 

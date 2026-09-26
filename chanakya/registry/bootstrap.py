@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from typing import Optional, Tuple
 
 from chanakya.capability.model import ActionType
+from chanakya.capability.schema import find_open_schema_violations
 from chanakya.contracts.enums import Classification, RiskCategory
 from chanakya.registry.models import (
     ApprovalRequirement,
@@ -35,6 +36,32 @@ OBSERVE_LOCAL_HOST_ENVIRONMENT_CAPABILITY = "observe_local_host_environment"
 
 #: Must equal chanakya.tools.handlers.listening_ports.CAPABILITY_ID.
 LIST_LISTENING_PORTS_CAPABILITY = "list_listening_ports"
+
+#: Phase 11: the observation keys LocalHostAdapter.collect_environment
+#: emits (asserted against the adapter in tests). A new key must be added
+#: here, or the capability's output is rejected by its envelope.
+LOCAL_HOST_OBSERVATION_KEYS = (
+    "os_name",
+    "os_release",
+    "os_version",
+    "platform",
+    "architecture",
+    "hostname",
+    "python_version",
+    "cpu_count",
+    "is_containerized",
+)
+
+#: Phase 11: ``chanakya.targets.environment.EnvironmentSource`` values
+#: (asserted in tests).
+ENVIRONMENT_SOURCE_VALUES = (
+    "user_declared",
+    "local_adapter",
+    "cloud_api",
+    "kubernetes_api",
+    "repository_source",
+    "tool_result",
+)
 
 
 def _utcnow_iso() -> str:
@@ -65,6 +92,9 @@ def make_observe_local_host_environment_entry(*, now: Optional[str] = None) -> R
         action_type=ActionType.OBSERVE,
         operations=("collect_environment",),
         parameters_schema={"type": "object", "properties": {}, "required": [], "additionalProperties": False},
+        # Phase 11 (D-2): closed. Describes exactly what
+        # LocalHostEnvironmentHandler returns: the fixed LocalHostAdapter
+        # observation keys, each with a string/integer/boolean/null value.
         output_schema={
             "type": "object",
             "properties": {
@@ -72,9 +102,31 @@ def make_observe_local_host_environment_entry(*, now: Optional[str] = None) -> R
                 "target_id": {"type": "string"},
                 "collected_by": {"type": "string"},
                 "collected_at": {"type": "string"},
-                "source": {"type": "string"},
-                "observations": {"type": "array"},
+                "source": {"type": "string", "enum": list(ENVIRONMENT_SOURCE_VALUES)},
+                "observations": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "key": {"type": "string", "enum": list(LOCAL_HOST_OBSERVATION_KEYS)},
+                            "value": {"type": ["string", "integer", "boolean", "null"]},
+                            "confidence": {"type": ["string", "null"], "enum": ["low", "medium", "high", None]},
+                            "notes": {"type": ["string", "null"]},
+                        },
+                        "required": ["key", "value", "confidence", "notes"],
+                        "additionalProperties": False,
+                    },
+                },
             },
+            "required": [
+                "environment_context_id",
+                "target_id",
+                "collected_by",
+                "collected_at",
+                "source",
+                "observations",
+            ],
+            "additionalProperties": False,
         },
         default_risk_category=RiskCategory.INFORMATIONAL,
         classification=Classification.READ_ONLY,
@@ -190,5 +242,13 @@ def make_list_listening_ports_entry(*, now: Optional[str] = None) -> RegistryEnt
 
 def production_registry_entries(*, now: Optional[str] = None) -> Tuple[RegistryEntry, ...]:
     """Every production capability, for a composition root to register.
-    Must stay in step with ``chanakya.tools.bootstrap.build_tool_executor``."""
-    return (make_observe_local_host_environment_entry(now=now), make_list_listening_ports_entry(now=now))
+    Must stay in step with ``chanakya.tools.bootstrap.build_tool_executor``.
+
+    Phase 11 (D-2): every production output schema must be closed
+    (``find_open_schema_violations``); an open one fails here, at
+    composition, before anything can run under it."""
+    entries = (make_observe_local_host_environment_entry(now=now), make_list_listening_ports_entry(now=now))
+    for entry in entries:
+        if find_open_schema_violations(entry.output_schema):
+            raise ValueError(f"production capability {entry.capability!r} does not declare a closed output schema")
+    return entries

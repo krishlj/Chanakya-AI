@@ -71,8 +71,8 @@ form except through the filtered projection in §4.
 | 10 | Read-only/state-changing classification | `classification` | enum(`read_only`,`state_changing`) | required | **The single most security-critical field in this schema.** Admin-set, authoritative, never inferred from self-description (SR-1, SR-23, T-04) |
 | 11 | Required privileges | `required_privileges` | object: `{os_privilege: enum(standard_user, elevated), target_access: enum(target_read, target_write)}` | required | Declares the *minimum* privilege the implementation needs; execution environment must be provisioned to exactly this, not more (SR-2) |
 | 12 | Supported target types | `supported_target_types` | array\<string\> | required, non-empty | Must each correspond to a `target_type` with a registered Target Adapter (`ARCHITECTURE.md` §7) |
-| 13 | Timeout | `default_timeout_seconds` | integer | required | Enforced by the Agent Runtime per step (`ARCHITECTURE.md` §3, §16; T-27 defense) |
-| 14 | Resource limits | `resource_limits` | object: `{max_output_bytes, max_cpu_seconds, max_memory_mb, max_concurrent_invocations}` | required | T-05/T-27 defense against oversized responses and resource exhaustion |
+| 13 | Timeout | `default_timeout_seconds` | integer | required | Enforced by the Agent Runtime per step, capped by `RuntimeExecutionLimits.default_step_timeout_seconds` (Phase 11; post-hoc, not preemptive — T-36) (`ARCHITECTURE.md` §3, §16; T-27 defense) |
+| 14 | Resource limits | `resource_limits` | object: `{max_output_bytes, max_cpu_seconds, max_memory_mb, max_concurrent_invocations}` | required | T-05/T-27 defense against oversized responses and resource exhaustion. Phase 11 enforces `max_output_bytes` only; the other three are declarative |
 | 15 | Approval requirement | `approval_requirement` | enum(`none`,`required`) | required | A **Registry-declared floor**, independent of `POLICY-GATEWAY.md`'s rule-based tightening — see §3 below for how the two compose |
 | 16 | Provenance | `provenance` | object — see §2 | required | Origin, integrity, and review trail |
 | 17 | Tool trust level | `trust_level` | enum(`core`,`first_party_adapter`,`vetted_third_party`,`quarantined`) | required | Orthogonal to `classification`; drives baseline scrutiny (§5) |
@@ -363,9 +363,47 @@ differences:
   subprocess, no shell. Strict parsers reject malformed rows instead of
   skipping them.
 
-The Runtime still does not enforce `resource_limits` generically, and
-it does not validate `output_schema` at run time. Each capability's
-tests validate its output against its registered schema.
+### Capability execution envelope (Phase 11)
+
+`output_schema`, `resource_limits.max_output_bytes` and
+`default_timeout_seconds` are enforced at run time through a
+`CapabilityEnvelope` (`chanakya/capability/envelope.py`):
+
+- **One source.**
+  - The Policy Gateway builds the envelope with
+    `envelope_from_registry_entry` from the same enabled `RegistryEntry`
+    it used for the decision, and attaches it to the `PolicyDecision`.
+  - Disabled, unregistered and reserved capabilities have no envelope.
+  - An entry whose `output_schema` uses an unsupported construct makes the
+    Gateway fail closed (`fail-closed-error` deny).
+- **Timeout.** The Runtime dispatches with
+  `min(default_timeout_seconds, RuntimeExecutionLimits.default_step_timeout_seconds)`.
+  The Runtime ceiling can tighten the Registry value, never loosen it.
+  The timeout is still **post-hoc**: a late result is discarded, but the
+  handler is not interrupted (T-36).
+- **Output.** After a handler returns, the Tool Layer checks, in order:
+  1. JSON compatibility (string keys, finite numbers, bounded depth);
+  2. canonical UTF-8 size (`chanakya.evidence.hashing.canonical_bytes`,
+     the bytes Evidence hashes) against `max_output_bytes`;
+  3. the declared `output_schema`.
+
+  Any failure is a `ToolResult(status=error)` with the fixed message
+  `capability_envelope_violation: <CODE>`. The output is never echoed,
+  truncated, repaired or stripped. It never becomes Evidence, and the
+  Runtime does not retry it.
+- **Closed production schemas (D-2).** `production_registry_entries()`
+  and `build_tool_executor(..., capability_registry=...)` refuse a
+  production capability whose output schema is not closed: every object
+  needs `properties`, `required` and `additionalProperties: false`, and
+  every array needs `items`.
+- **Supported keywords.** The validator (`chanakya/capability/schema.py`)
+  supports `type` (one name or a list, including `null`), `properties`,
+  `required`, `additionalProperties` (boolean), `items`, `enum`,
+  `minimum`, `description` and `title`. Output schemas may use nothing
+  else.
+- **Not enforced.** `max_cpu_seconds`, `max_memory_mb` and
+  `max_concurrent_invocations` remain **declarative only**. Enforcing
+  them honestly needs process isolation, which Chanakya does not have.
 
 ## Example registry entries
 

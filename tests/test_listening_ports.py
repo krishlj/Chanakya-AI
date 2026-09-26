@@ -20,6 +20,7 @@ import pytest
 
 import chanakya.cli.main as cli_main
 import chanakya.tools.handlers.listening_ports as lp
+from chanakya.capability.envelope import envelope_from_registry_entry
 from chanakya.capability.model import ActionType, PermissionLevel, derive_permission_level
 from chanakya.contracts.audit_event import AuditEventType
 from chanakya.contracts.enums import Classification, RiskCategory
@@ -376,10 +377,13 @@ def test_unsupported_platform_becomes_an_error_tool_result():
 
 
 def _instruction(parameters=None) -> DispatchInstruction:
+    # Phase 11: the production envelope, derived from the production entry.
+    envelope = envelope_from_registry_entry(make_list_listening_ports_entry())
     return DispatchInstruction(
         investigation_id="inv-8", tool_request_id="tr-8", capability=CAP, target_ref="local-host",
-        parameters=parameters or {}, resolved_timeout_seconds=15, resolved_resource_limits={},
-        policy_decision_id="pd-8", attempt_number=1,
+        parameters=parameters or {}, resolved_timeout_seconds=15,
+        resolved_resource_limits={"max_output_bytes": envelope.max_output_bytes},
+        policy_decision_id="pd-8", attempt_number=1, capability_envelope=envelope,
     )
 
 

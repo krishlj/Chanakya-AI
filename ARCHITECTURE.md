@@ -197,6 +197,24 @@ process, use no shell and send no network traffic. Output is bounded
 and fails closed rather than being truncated. No MCP integration exists
 yet. See `docs/TOOL-REGISTRY.md` "Production capabilities".
 
+**Status (Phase 11):** the execution envelope the Registry declares is
+enforced.
+
+- **Source.** The Policy Gateway attaches a `CapabilityEnvelope` (output
+  schema, maximum output bytes, declared timeout) to each decision,
+  derived from the Registry entry it decided on.
+- **Timeout.** The Runtime dispatches with
+  `min(declared timeout, Runtime step ceiling)`. It is still post-hoc,
+  not preemptive.
+- **Output.** The Tool Layer rejects output that is not
+  JSON-compatible, exceeds the canonical size limit or violates the
+  schema. The rejection is an error result with a fixed code; it is never
+  echoed, truncated or repaired, and it never becomes Evidence.
+- **Production schemas.** They are closed.
+- **Not enforced.** CPU, memory and concurrency limits remain
+  declarative. See `docs/TOOL-REGISTRY.md` "Capability execution
+  envelope (Phase 11)".
+
 ## 9. Security Tool Registry
 
 The catalog of every capability the system knows how to run. Each entry

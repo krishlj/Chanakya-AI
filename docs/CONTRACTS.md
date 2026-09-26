@@ -303,6 +303,8 @@ first — this is what makes policy decisions explicit rather than implicit.
 | `evaluated_at` | string (timestamp) | required | Evaluation time |
 | `risk_category` | string | optional | Copied from the Security Tool Registry's classification for this capability |
 | `notes` | string | optional | Additional context |
+| `classification` | string | optional | Implementation addition (Phase 5.2.1): snapshot of the Registry `classification` at decision time, copied into `Evidence` |
+| `capability_envelope` | object | optional | Implementation addition (Phase 11): `{capability, output_schema, max_output_bytes, timeout_seconds}`, derived by the Gateway from the same Registry entry it decided on. Execution is constrained by it (timeout capped by the Runtime ceiling; output size and schema enforced by the Tool Layer). It is never an authorization signal and never comes from the model, target, handler or parameters |
 
 **Validation requirements**
 - `verdict` is restricted to exactly the three defined values.

@@ -29,12 +29,22 @@ exist yet (Phase 4+), and this module must never fabricate a successful
 ``ToolResult`` on its own (Phase 3 Step 3.4 boundary: "Do not fake
 successful security-tool execution"). Callers — including every test in
 this codebase — must supply an explicit ``ToolExecutor``.
+
+Phase 11: ``DispatchInstruction.capability_envelope`` carries the
+``CapabilityEnvelope`` the Gateway attached to the ``PolicyDecision``.
+``dispatch()`` refuses an instruction whose envelope differs from the
+decision's, names another capability, or claims a timeout or output limit
+looser than the envelope. It does not add the envelope when both are
+absent (callers that build decisions by hand); the Agent Loop Controller
+never dispatches without one, and the production Tool Layer refuses to run
+a handler without one.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional, Protocol
 
+from chanakya.capability.envelope import CapabilityEnvelope
 from chanakya.contracts.approval import ApprovalDecision, ApprovalDecisionValue, ApprovalRequest
 from chanakya.contracts.enums import Verdict
 from chanakya.contracts.policy_decision import PolicyDecision
@@ -60,6 +70,22 @@ class DispatchInstruction:
     policy_decision_id: str
     attempt_number: int
     approval_decision_id: Optional[str] = None
+    #: Phase 11 — the authorized envelope, copied from the PolicyDecision.
+    capability_envelope: Optional[CapabilityEnvelope] = None
+
+
+def _check_envelope_binding(instruction: DispatchInstruction, policy_decision: PolicyDecision) -> None:
+    envelope = instruction.capability_envelope
+    if envelope != policy_decision.capability_envelope:
+        raise DispatchPreconditionError("DispatchInstruction.capability_envelope differs from the PolicyDecision's")
+    if envelope is None:
+        return
+    if envelope.capability != instruction.capability:
+        raise DispatchPreconditionError("capability envelope was issued for a different capability")
+    if not 0 < instruction.resolved_timeout_seconds <= envelope.timeout_seconds:
+        raise DispatchPreconditionError("resolved timeout exceeds the capability envelope")
+    if dict(instruction.resolved_resource_limits) != {"max_output_bytes": envelope.max_output_bytes}:
+        raise DispatchPreconditionError("resolved resource limits differ from the capability envelope")
 
 
 class ToolExecutor(Protocol):
@@ -98,6 +124,7 @@ def dispatch(
         raise DispatchPreconditionError("cannot dispatch: PolicyDecision.verdict is DENY")
 
     if policy_decision.verdict == Verdict.ALLOW:
+        _check_envelope_binding(instruction, policy_decision)
         return executor.execute(instruction)
 
     if policy_decision.verdict == Verdict.REQUIRE_APPROVAL:
@@ -123,6 +150,7 @@ def dispatch(
             raise DispatchPreconditionError(
                 "cannot dispatch: ApprovalDecision.decision is not ACCEPT"
             )
+        _check_envelope_binding(instruction, policy_decision)
         return executor.execute(instruction)
 
     # Defensive — Verdict is a closed, three-value enum, so this should be

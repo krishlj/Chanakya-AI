@@ -37,13 +37,41 @@ Security boundary (Phase 5.1 design report §2):
 - Rejects a non-mapping handler return value as malformed rather than
   constructing a ``ToolResult`` around it — a handler's output shape is
   enforced here, not assumed.
+
+Phase 11 — capability execution envelope (CE-INV-1, 2, 4, 5):
+
+- Runs a handler only under ``instruction.capability_envelope``: the
+  envelope the Policy Gateway attached to the authorizing decision, which
+  ``dispatch()`` has already bound to it. No envelope, or one naming
+  another capability, is an error and the handler never runs.
+- When built with ``envelopes`` (the production composition root does,
+  from the same Registry the Gateway uses), the instruction's envelope must
+  also equal the one registered for that capability; a mismatch fails
+  closed before the handler runs. These are a cross-check only: limits are
+  always taken from the instruction, never from this map.
+- After the handler returns, ``chanakya.capability.envelope.check_output``
+  checks JSON compatibility, canonical UTF-8 size against
+  ``max_output_bytes`` and the declared ``output_schema``. A violation is a
+  ``ToolResult(status=error)`` whose message is the fixed
+  ``capability_envelope_violation: <CODE>``, never the output; nothing is
+  truncated, repaired or stripped, and only SUCCESS results become
+  Evidence. The Runtime does not retry envelope violations.
+- The imports here are still free of ``chanakya.policy``; the validator
+  lives in ``chanakya.capability.schema``.
 """
 from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Mapping, Protocol, Sequence, runtime_checkable
+from typing import Any, Dict, Mapping, Optional, Protocol, Sequence, runtime_checkable
 
+from chanakya.capability.envelope import (
+    ENVELOPE_MISMATCH,
+    ENVELOPE_MISSING,
+    CapabilityEnvelope,
+    check_output,
+    violation_message,
+)
 from chanakya.contracts.target import Target
 from chanakya.contracts.tool_result import ToolResult, ToolResultStatus
 from chanakya.runtime.dispatch import DispatchInstruction
@@ -85,9 +113,24 @@ class CapabilityDispatchExecutor:
     exists) — the set of invocable capabilities for a given executor
     instance is closed for its lifetime."""
 
-    def __init__(self, target_registry: TargetRegistry, handlers: Mapping[str, CapabilityHandler]) -> None:
+    def __init__(
+        self,
+        target_registry: TargetRegistry,
+        handlers: Mapping[str, CapabilityHandler],
+        *,
+        envelopes: Optional[Mapping[str, CapabilityEnvelope]] = None,
+    ) -> None:
         self._targets = target_registry
         self._handlers = dict(handlers)
+        self._envelopes: Optional[Dict[str, CapabilityEnvelope]] = None
+        if envelopes is not None:
+            # Parity: exactly one Registry-derived envelope per handler.
+            if set(envelopes) != set(self._handlers):
+                raise ValueError("capability envelopes must cover exactly the registered handlers")
+            for capability, envelope in envelopes.items():
+                if not isinstance(envelope, CapabilityEnvelope) or envelope.capability != capability:
+                    raise ValueError("capability envelope does not match its capability")
+            self._envelopes = dict(envelopes)
 
     @property
     def registered_capabilities(self) -> Sequence[str]:
@@ -98,6 +141,14 @@ class CapabilityDispatchExecutor:
 
     def execute(self, instruction: DispatchInstruction) -> ToolResult:
         started_at = _utcnow_iso()
+
+        envelope = instruction.capability_envelope
+        if not isinstance(envelope, CapabilityEnvelope):
+            return self._error_result(instruction, started_at, violation_message(ENVELOPE_MISSING))
+        if envelope.capability != instruction.capability or (
+            self._envelopes is not None and self._envelopes.get(instruction.capability) != envelope
+        ):
+            return self._error_result(instruction, started_at, violation_message(ENVELOPE_MISMATCH))
 
         handler = self._handlers.get(instruction.capability)
         if handler is None:
@@ -136,6 +187,11 @@ class CapabilityDispatchExecutor:
                 f"handler for capability {instruction.capability!r} returned a non-mapping "
                 f"output ({type(output).__name__}) — rejected as malformed",
             )
+
+        # Phase 11: size and schema, before anything can become Evidence.
+        violation = check_output(envelope, output)
+        if violation is not None:
+            return self._error_result(instruction, started_at, violation_message(violation))
 
         return ToolResult(
             tool_result_id=str(uuid.uuid4()),

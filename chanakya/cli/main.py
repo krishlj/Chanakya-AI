@@ -180,7 +180,7 @@ def build_runtime(
     target_registry = TargetRegistry([_local_host_target(now)])
     target_manager = TargetManager(target_registry)
     gateway = PolicyGateway(registry, target_registry, _policy_set(require_approval, now))
-    executor = build_tool_executor(target_registry)
+    executor = build_tool_executor(target_registry, capability_registry=registry)
 
     evidence_store = EvidenceStore(workdir / "evidence")
     finding_store = FindingStore(workdir / "findings")

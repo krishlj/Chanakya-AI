@@ -29,8 +29,10 @@ import time
 import uuid
 from dataclasses import dataclass
 from enum import Enum
+from types import MappingProxyType
 from typing import Any, Callable, Mapping, Optional, Protocol, Sequence, Tuple
 
+from chanakya.capability.envelope import is_envelope_violation
 from chanakya.contracts.approval import (
     ApprovalDecision,
     ApprovalDecisionValue,
@@ -762,6 +764,14 @@ class AgentLoopController:
                 self._audit.dispatch_failed(investigation_id, tool_result, retry_scheduled=False, reason="investigation no longer running")
                 return result
 
+            if tool_result.status == ToolResultStatus.ERROR and is_envelope_violation(tool_result.error_message):
+                # Phase 11: an envelope violation is deterministic (same
+                # handler, same envelope); retrying would only repeat it.
+                self._audit.dispatch_failed(
+                    investigation_id, tool_result, retry_scheduled=False, reason="capability_envelope_violation"
+                )
+                return result
+
             if not self._retry_controller.should_retry(step):
                 self._audit.dispatch_failed(investigation_id, tool_result, retry_scheduled=False, reason="retry budget exhausted")
                 return result
@@ -985,7 +995,22 @@ class AgentLoopController:
             )
             return TurnResult(outcome=TurnOutcome.HALTED, step_record=step, detail=str(exc))
 
-        timeout_seconds = self._governor.limits.default_step_timeout_seconds
+        # Phase 11 (D-1): execution is constrained by the envelope the Gateway
+        # attached to this decision, i.e. the Registry state it authorized.
+        # The Runtime never invents limits: without an envelope for exactly
+        # this capability, nothing is dispatched.
+        envelope = policy_decision.capability_envelope
+        if envelope is None or envelope.capability != tool_request.capability:
+            step.transition(StepStatus.EXECUTING)
+            step.transition(StepStatus.STEP_FAILED)
+            context.end_current_step()
+            detail = "authorized PolicyDecision carries no capability envelope for this capability"
+            self._investigations.fail(
+                investigation_id, reason="dispatch_precondition_violation", details={"detail": detail}
+            )
+            return TurnResult(outcome=TurnOutcome.FAILED, step_record=step, detail=detail)
+        # The Runtime ceiling can only tighten the Registry timeout (CE-INV-3).
+        timeout_seconds = min(envelope.timeout_seconds, self._governor.limits.default_step_timeout_seconds)
         instruction = DispatchInstruction(
             investigation_id=investigation_id,
             tool_request_id=tool_request.tool_request_id,
@@ -993,10 +1018,11 @@ class AgentLoopController:
             target_ref=tool_request.target_ref,
             parameters=tool_request.parameters,
             resolved_timeout_seconds=timeout_seconds,
-            resolved_resource_limits={},
+            resolved_resource_limits=MappingProxyType({"max_output_bytes": envelope.max_output_bytes}),
             policy_decision_id=policy_decision.policy_decision_id,
             approval_decision_id=approval_decision.approval_decision_id if approval_decision else None,
             attempt_number=step.attempt_number,
+            capability_envelope=envelope,
         )
         step.transition(StepStatus.EXECUTING)
         self._audit.dispatch_started(investigation_id, tool_request.tool_request_id)

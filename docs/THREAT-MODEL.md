@@ -1049,6 +1049,10 @@ existing threat terminology; none adds a new trust boundary.
   network calls; reads are bounded (16 MiB per table, 5 Windows
   size-negotiation attempts); output over the limit fails closed.
   *Residual:* a general preemptive timeout is still missing.
+  *Phase 11 status:* **still deferred.** The step timeout is now the
+  capability's declared timeout capped by the Runtime ceiling (T-53), but
+  enforcement remains post-hoc: a late result is discarded, and the
+  handler is not interrupted.
 - **T-37 candidate — Platform-parsing divergence produces misleading
   evidence** (a T-06/T-07 variant).
   *Controls:* strict parsers; a malformed row fails the whole call
@@ -1179,6 +1183,45 @@ and a new record behind TB-8, not a new trust boundary.
   - `investigation_completed` is not emitted;
   - verification reports a missing assessment, so the CLI shows no
     ratings rather than a partial set.
+
+### Candidate threats from Phase 11 (capability execution envelope)
+
+Both threats sit on the existing TB-6 inbound boundary (tool output
+entering the Runtime). Phase 11 closes the gap between what the Registry
+declared and what was enforced; it adds no trust boundary.
+
+- **T-52 candidate — Declared-but-unenforced capability output contract**
+  (TB-6 inbound; a T-05/T-14/T-27 variant). Before Phase 11, `output_schema`
+  and `max_output_bytes` were declared but never checked at run time, so
+  output shape and size depended on each handler author's discipline.
+  Reviewers reading the Registry documentation could reasonably believe
+  otherwise.
+  *Controls:*
+  - the Gateway attaches a Registry-derived `CapabilityEnvelope` to each
+    decision;
+  - the Tool Layer rejects output that is not JSON-compatible, exceeds the
+    canonical UTF-8 limit, or violates the schema, with a fixed-code error
+    that never echoes output;
+  - rejected output never becomes Evidence and is not retried;
+  - production output schemas must be closed (D-2), and unsupported schema
+    constructs fail closed;
+  - the executor cross-checks its Registry-derived envelopes (parity).
+
+  *Residual:* the schema validator supports a deliberately small keyword
+  set, so string contents are not bounded by length or pattern.
+  Parameter schemas still ignore unknown keywords (Phase 2 behavior).
+- **T-53 candidate — Registry timeout drift.** The Registry's
+  `default_timeout_seconds` was unused, and every step got the global
+  Runtime timeout regardless of the capability's declaration.
+  *Controls:*
+  - effective timeout = `min(declared timeout, Runtime ceiling)`, carried
+    in the envelope and bound by `dispatch()`, which rejects a looser
+    value;
+  - tests cover shorter, longer and equal cases, and slow handlers at each
+    boundary.
+
+  *Residual:* enforcement is post-hoc (T-36, still deferred).
+  CPU, memory and concurrency limits remain declarative.
 
 ---
 

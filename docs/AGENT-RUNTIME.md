@@ -160,7 +160,7 @@ singular.
 | **Result Handler** | Normalizes/validates the returned `ToolResult` shape; routes it to Evidence Writer and back into context for the next turn | `ToolResult` (semi-trusted — target-originated) | Normalized `ToolResult`, trigger to Evidence Writer | Trusted control code; **output is semi-trusted** | TB-6 inbound |
 | **Evidence Writer** | The only component with write access to the Evidence Store; computes `content_hash`, assigns provenance fields | `ToolResult`, step/request identifiers | `Evidence` record | Trusted control code | TB-8 (write-only, append-only) |
 | **Audit Emitter** | The only component with write access to the Audit Log; emits one `AuditEvent` per transition, unconditionally | Every other component's transition notifications | `AuditEvent` record | Trusted control code | TB-8 (write-only, append-only) |
-| **Timeout Supervisor** | Enforces per-step (Registry `default_timeout_seconds`) and per-investigation (`RuntimeExecutionLimits`) timeouts | Wall-clock time, in-flight step/investigation state | Timeout signal → treated as a step or investigation failure | Trusted control code | Internal — bounds T-27 |
+| **Timeout Supervisor** | Enforces per-step (the effective timeout: Registry `default_timeout_seconds` capped by `RuntimeExecutionLimits.default_step_timeout_seconds`, Phase 11; post-hoc) and per-investigation (`RuntimeExecutionLimits`) timeouts | Wall-clock time, in-flight step/investigation state | Timeout signal → treated as a step or investigation failure | Trusted control code | Internal — bounds T-27 |
 | **Retry Controller** | Bounded, policy-driven retry for transient tool/LLM failures; never retries a denial | Step/turn failure classification, `RuntimeExecutionLimits.max_retries_per_step` | A new attempt (new `tool_request_id`) or a terminal step failure | Trusted control code | Internal — enforces RT-INV-4 |
 | **Resource Governor** | Tracks per-capability call counts (for the Gateway's rate-limit rules), step budgets, and concurrency caps | Step completions, `RuntimeExecutionLimits` | `EvaluationContext.call_counts`; budget-exceeded signals | Trusted control code | Internal — bounds T-08, T-27 |
 | **Cancellation Handler** | Accepts an operator-initiated cancellation signal and drives a cooperative, safe shutdown of one investigation | Human cancellation command | Lifecycle transition to `halted`, `AuditEvent` | Trusted control code; human-triggered | TB-1 — enforces RT-INV-9 |
@@ -449,9 +449,25 @@ The Dispatcher resolves the effective execution parameters from the
 Registry entry (via the `PolicyDecision`'s originating evaluation, not a
 fresh Registry query — the entry used for dispatch must be the same one
 the Gateway evaluated against) into a `DispatchInstruction`: capability,
-target reference, parameters, the Registry's `default_timeout_seconds`
-and `resource_limits`, and the identifiers needed for audit
-traceability. It then calls into the (Phase 4+) Tool Layer.
+target reference, parameters, the effective timeout and output limit,
+and the identifiers needed for audit traceability. It then calls into
+the (Phase 4+) Tool Layer.
+
+> **As implemented (Phase 11).** Before Phase 11 this paragraph described
+> intent only: the Runtime used the global step timeout and passed
+> `resolved_resource_limits={}`.
+> - **Envelope.** The Gateway now attaches a `CapabilityEnvelope` (output
+>   schema, `max_output_bytes`, declared timeout) to the `PolicyDecision`.
+>   The Agent Loop Controller copies it into
+>   `DispatchInstruction.capability_envelope`, with:
+>   - `resolved_timeout_seconds = min(envelope timeout, default_step_timeout_seconds)`;
+>   - `resolved_resource_limits = {"max_output_bytes": ...}`.
+> - **Fail closed.** A decision without an envelope for exactly this
+>   capability is never dispatched (`dispatch_precondition_violation`).
+> - **Binding.** `dispatch()` rejects an instruction whose envelope,
+>   capability, timeout or limits are not bound to the decision.
+>
+> See "Capability execution envelope (Phase 11)" below.
 
 Because the Tool Layer does not exist yet, Phase 3 defines this
 boundary as a stable interface (`DispatchInstruction` in, `ToolResult`
@@ -1472,6 +1488,68 @@ finding text). Then `complete()`.
 - **Partial state.** An RA written before a failed `risk_assessed` event
   stays durable without its event.
 
+#### Capability execution envelope (Phase 11)
+
+Every capability execution is constrained by an immutable
+`CapabilityEnvelope` (`chanakya/capability/envelope.py`): `capability`,
+`output_schema`, `max_output_bytes`, `timeout_seconds`. It carries no
+authority; the verdict alone decides whether anything runs.
+
+```
+ToolRequest → PolicyGateway → RegistryEntry → PolicyDecision + CapabilityEnvelope
+  → DispatchInstruction (timeout = min(envelope, Runtime ceiling)) → dispatch() binding check
+  → handler → envelope check (serializable → size → schema) → SUCCESS → Evidence
+                                                             ↘ ERROR (fixed code) → no Evidence, no retry
+```
+
+- **Source (D-1).**
+  - `PolicyGateway._decide` builds the envelope with
+    `envelope_from_registry_entry` from the entry it decided on and
+    attaches it as `PolicyDecision.capability_envelope`. There is no
+    second Registry lookup on the execution path.
+  - The model, the target, the handler and `ToolRequest.parameters`
+    cannot supply or change it.
+  - The production executor also holds the Registry-derived envelopes
+    built at composition (`build_tool_executor(...,
+    capability_registry=registry)`) and refuses an instruction whose
+    envelope differs. That map is a parity cross-check, never a source of
+    limits.
+- **Runtime.** `_execute_once` fails closed if the decision has no
+  envelope for exactly this capability. Otherwise it dispatches with
+  `resolved_timeout_seconds = min(envelope.timeout_seconds,
+  default_step_timeout_seconds)`: the Runtime tightens and never loosens.
+- **dispatch().** It refuses an instruction whose envelope differs from
+  the decision's, names another capability, or claims a looser timeout or
+  different limits. The check runs after the existing approval-binding
+  checks and immediately before execution.
+- **Tool Layer.**
+  - `CapabilityDispatchExecutor` runs no handler without an envelope.
+  - After the handler returns, `check_output` rejects, in order:
+    non-JSON-compatible output, canonical UTF-8 output over
+    `max_output_bytes`, and any `output_schema` violation.
+  - A rejection is `ToolResult(status=error, error_message="capability_envelope_violation: <CODE>")`.
+    The code comes from a fixed set. The message never contains output
+    values, unexpected key names or `repr` of arbitrary objects.
+- **Retry.** Envelope violations are deterministic. `_run_attempt_with_retries`
+  records `dispatch_failed` with `retry_scheduled: false` and
+  `reason: capability_envelope_violation`, and does not retry. Handler
+  exceptions and timeouts keep their existing bounded retry.
+- **Timeouts are post-hoc** (unchanged, T-36): a late result is replaced
+  by a synthetic TIMEOUT result, but the handler is not interrupted.
+- **Not enforced.** `max_cpu_seconds`, `max_memory_mb` and
+  `max_concurrent_invocations` remain declarative only.
+
+| ID | Invariant | Tests (`tests/test_capability_envelope.py` unless noted) |
+|---|---|---|
+| CE-INV-1 | No SUCCESS ToolResult reaches Evidence or model context unless its output conforms to the declared `output_schema`. | `test_envelope_violation_never_becomes_evidence_and_is_not_retried`, `test_executor_rejects_violations_with_fixed_messages`, `test_schema_violations_raise_fixed_codes_without_values` |
+| CE-INV-2 | No successful result exceeds `max_output_bytes` in canonical UTF-8; oversized output is rejected, never truncated. | `test_exactly_max_output_bytes_is_accepted_and_one_over_is_rejected`, `test_size_is_canonical_utf8_bytes_not_characters`, `test_envelope_violation_never_becomes_evidence_and_is_not_retried[oversized]` |
+| CE-INV-3 | The effective step timeout is never greater than min(Registry timeout, Runtime ceiling). | `test_effective_timeout_is_the_minimum`, `test_slow_handlers_time_out_at_the_effective_timeout`, `test_dispatch_refuses_envelopes_not_bound_to_the_decision[timeout_above_envelope]` |
+| CE-INV-4 | Envelope values originate only from the authorized Registry snapshot, never from the model, target, handler or parameters. | `test_gateway_attaches_the_envelope_of_the_entry_it_decided_on`, `test_parameters_cannot_supply_or_change_the_envelope`, `test_target_metadata_cannot_change_the_envelope`, `test_handler_cannot_change_its_envelope`, `test_runtime_never_dispatches_without_a_matching_envelope`, `test_executor_parity_rejects_an_envelope_that_differs_from_the_registry`, `test_cli_executor_envelopes_equal_the_gateway_registry` |
+| CE-INV-5 | Envelope validation failures never echo rejected output. | `test_schema_violations_raise_fixed_codes_without_values`, `test_schema_error_path_never_contains_value_keys`, `test_non_serializable_output_is_rejected_without_repr`, `test_cli_run_with_invalid_output_shows_only_the_fixed_code` |
+| CE-INV-6 | The Tool Layer does not import `chanakya.policy`. | `test_tool_layer_never_imports_policy`, `tests/test_tool_layer.py::test_a8_executor_module_cannot_reach_policy_or_construct_its_own_dispatch` |
+| CE-INV-7 | Phase 9 FND-INV invariants are unchanged. | the unchanged `tests/test_findings.py` |
+| CE-INV-8 | Phase 10 RA-INV invariants are unchanged. | the unchanged `tests/test_risk_*.py` |
+
 **`RuntimeExecutionLimits`** — admin-controlled configuration (trusted,
 versioned, not Agent-writable), analogous to `PolicySet`.
 
@@ -1516,11 +1594,12 @@ the Dispatcher's interface (§7) is concrete.
 | `capability` | string | required |
 | `target_ref` | string | required |
 | `parameters` | object | required |
-| `resolved_timeout_seconds` | integer | required (copied from the Registry entry at dispatch time) |
-| `resolved_resource_limits` | object | required (copied from the Registry entry at dispatch time) |
+| `resolved_timeout_seconds` | integer | required: `min(envelope.timeout_seconds, RuntimeExecutionLimits.default_step_timeout_seconds)` (Phase 11) |
+| `resolved_resource_limits` | object | required: exactly `{"max_output_bytes": envelope.max_output_bytes}` (Phase 11) |
 | `policy_decision_id` | string | required |
 | `approval_decision_id` | string | optional |
 | `attempt_number` | integer | required |
+| `capability_envelope` | `CapabilityEnvelope` | optional in the type; the Agent Loop Controller always sets it from the `PolicyDecision`, and the production Tool Layer refuses to run without it (Phase 11) |
 
 Never includes a credential (RT-INV-11); never visible to the Agent.
 

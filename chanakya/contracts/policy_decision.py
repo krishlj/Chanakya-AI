@@ -15,11 +15,22 @@ field does not itself populate it: ``chanakya.policy.gateway.
 PolicyGateway`` is unmodified by this phase and does not yet set it on
 any ``PolicyDecision`` it constructs — that wiring is deferred to the
 phase that actually needs it.
+
+``capability_envelope`` (Phase 11) is a second additive, optional snapshot:
+the ``CapabilityEnvelope`` (output schema, maximum output bytes, declared
+timeout) the Gateway derived from the same ``RegistryEntry`` it used for
+this decision. The Runtime dispatches under it and the Tool Layer enforces
+it, so execution is constrained by the Registry state that was authorized,
+with no second Registry lookup on the execution path. Like
+``classification`` it is never an authorization signal: the verdict alone
+decides whether anything runs.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Optional
+
+from chanakya.capability.envelope import CapabilityEnvelope
 
 from .enums import Classification, RiskCategory, Verdict
 
@@ -36,6 +47,11 @@ class PolicyDecision:
     risk_category: Optional[RiskCategory] = None
     notes: Optional[str] = None
     classification: Optional[Classification] = None
+    capability_envelope: Optional[CapabilityEnvelope] = None
+
+    def __post_init__(self) -> None:
+        if self.capability_envelope is not None and not isinstance(self.capability_envelope, CapabilityEnvelope):
+            raise TypeError("PolicyDecision.capability_envelope must be a CapabilityEnvelope")
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -53,4 +69,6 @@ class PolicyDecision:
             payload["notes"] = self.notes
         if self.classification is not None:
             payload["classification"] = self.classification.value
+        if self.capability_envelope is not None:
+            payload["capability_envelope"] = self.capability_envelope.to_dict()
         return payload
