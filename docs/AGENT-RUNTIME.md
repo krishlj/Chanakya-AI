@@ -1550,6 +1550,110 @@ ToolRequest → PolicyGateway → RegistryEntry → PolicyDecision + CapabilityE
 | CE-INV-7 | Phase 9 FND-INV invariants are unchanged. | the unchanged `tests/test_findings.py` |
 | CE-INV-8 | Phase 10 RA-INV invariants are unchanged. | the unchanged `tests/test_risk_*.py` |
 
+#### Durable authorization record and investigation review (Phase 12)
+
+**Why.** Before Phase 12 most audit events carried only ids, so the durable
+record could not say what was proposed, authorized, denied, approved or
+dispatched (T-54). An investigation that ended without a terminal event
+was indistinguishable from one still running (T-55). Live Runtime state
+(`InvestigationContext`, `StepRecord`s) **remains in memory**. This phase
+adds no persistence and no resume.
+
+**Durable facts.** Additive `AuditEvent.details` on existing event types;
+no new `event_type` and no contract version bump. Defined once in
+`chanakya/contracts/audit_details.py` and built by `AuditEmitter`.
+
+| Event | Added `details` |
+|---|---|
+| `investigation_started` | `investigation_request_id`, `submitted_by`, `submitted_at`, `target_refs`, `objective` |
+| `request_proposed` | `capability`, `target_ref`, `step_id` (Runtime `StepRecord` id), `attempt_number`, `parameters_canonical`, `parameters_hash` |
+| `policy_evaluated` | adds `capability`, `target_ref`, `classification`, `risk_category`, `envelope` (`capability`, `timeout_seconds`, `max_output_bytes`, `output_schema_hash`, or `null` for a deny without an entry) |
+| `approval_requested` | `step_id`, `expires_at`, `risk_context` (`capability`, `target_ref`, `parameters_canonical`, `parameters_hash`) |
+| `dispatch_started` | `capability`, `target_ref`, `step_id`, `attempt_number`, `resolved_timeout_seconds`, `max_output_bytes`, `policy_decision_id`, all taken from the `DispatchInstruction` |
+| `error` from `InvestigationManager.fail` | `investigation_status: "failed"`, marking the terminal FAILED transition apart from non-terminal backstop `error` events |
+
+- **D-1, objective.** Stored as text: at most 2000 characters, no control
+  characters except newline and tab, and rejected if credential-shaped.
+  - It is built in `create_investigation` *before* anything is created; a
+    rejected objective raises `AuditFactError` and no investigation exists.
+  - The CLI reports only the reason code.
+- **D-2, parameters.**
+  - Stored as canonical JSON (`chanakya.evidence.hashing.canonical_bytes`)
+    plus `compute_content_hash` of the same mapping.
+  - They must be JSON-compatible and at most 4096 canonical bytes, with no
+    credential-shaped keys or string values.
+  - `verify_parameters` re-derives both from the stored text.
+- **Screening** reuses the `TargetLocator` URL-userinfo and `key=`
+  patterns and the Finding free-text pattern. It is best-effort (T-20).
+- **Fail closed.**
+  - A fact that cannot be recorded safely becomes `AuditSinkError` with a
+    fixed code, and the existing backstop halts the investigation
+    (`audit_sink_failure`) before policy evaluation or dispatch.
+  - The durable sink's 64 KiB record limit and `details` screen still
+    apply.
+  - Nothing is truncated, redacted or dropped, and rejected values are
+    never echoed.
+
+**Investigation Review** (`chanakya/review/`) is read-only. It is not an
+enforcement boundary, and only the CLI imports it.
+- **API.** `reconstruct_investigation(investigation_id, *, audit_log,
+  evidence_store, finding_store, risk_store, risk_engine)` returns a frozen
+  `InvestigationReview`.
+- **Audit chain.** It verifies the chain (record hashes, links, sequence,
+  shape, stream ownership). A broken chain makes the review
+  `UNVERIFIABLE`, and nothing is reported as fact.
+- **Replay.** It replays events and validates Phase 12 `details` against
+  closed shapes, re-hashing parameters. It flags history that does not
+  follow, for example:
+  - a dispatch without an allow or accepted approval;
+  - an approval without a `require_approval` decision;
+  - mismatched capability, target or envelope;
+  - duplicate or post-terminal events.
+- **Cross-store checks.**
+  - Audit ↔ Evidence (scoped verification, including the payload).
+  - Findings: evidence of their own investigation, recorded in the audit.
+  - RiskAssessments: finding, evidence and recomputation with the
+    deterministic engine.
+  - Orphans are reported in both directions.
+- **Status.**
+  - `COMPLETED`, `HALTED` or `FAILED` only when the terminal event is
+    recorded.
+  - `INCOMPLETE` otherwise.
+  - `NOT_FOUND` when no stream exists.
+- **Findings of the review.** Anomalies are fixed codes plus, at most, an
+  identifier.
+- **Guarantees.** It never writes, repairs, authorizes, approves, executes
+  or calls a model. `python -m chanakya.cli --review <id>` reads no
+  credential, builds no Runtime, provider, Gateway or executor, creates no
+  directory, and renders every value escaped. It exits 0 only for a
+  verified, consistent record.
+
+| ID | Invariant | Tests |
+|---|---|---|
+| AR-INV-1 | Every durable policy decision identifies the capability, target and verdict. | `test_request_and_policy_and_dispatch_are_recorded`, `test_denied_request_is_reconstructable`, `test_rewritten_facts_are_detected[no_capability,no_target_ref]` |
+| AR-INV-2 | Every durable proposed request preserves bounded canonical parameters and their integrity hash. | `test_parameters_are_canonical_json_with_integrity_hash`, `test_non_empty_parameters_are_recorded_even_when_denied`, `test_rewritten_facts_are_detected[params_after_hash]` |
+| AR-INV-3 | Every approval-gated request preserves the risk-context facts presented for approval. | `test_approval_request_records_what_was_shown`, `test_denied_and_approval_history_is_reconstructed` |
+| AR-INV-4 | Every `dispatch_started` records the resolved timeout and identifies capability and target. | `test_request_and_policy_and_dispatch_are_recorded`, `test_rewritten_facts_are_detected[looser_timeout,dispatch_target]` |
+| AR-INV-5 | Objective and origin are durably reconstructable without exposing credentials. | `test_investigation_started_records_origin`, `test_credential_shaped_objective_creates_no_investigation`, `test_unsafe_objectives_are_rejected_without_echo` |
+| AR-INV-6 | Review is strictly read-only and cannot execute, authorize, approve or modify anything. | `test_review_package_imports_nothing_on_the_execution_or_authorization_path`, `test_only_the_cli_imports_the_review_package`, `test_review_code_calls_no_mutating_or_executing_api`, `test_review_modifies_no_artifact`, `test_cli_review_reads_no_credential_and_builds_no_runtime` |
+| AR-INV-7 | A missing terminal event is never represented as a completed investigation. | `test_crash_points_are_incomplete_never_completed`, `test_removing_completion_is_incomplete_not_completed`, `test_missing_terminal_event_is_never_consistent_completion` |
+
+(The Phase 12 brief called these AL-INV-1..7. They are numbered AR-INV here
+because AL-INV-1..9 already name the Phase 6 audit-log invariants above.)
+
+**Limitations.**
+- **Tampering the chain cannot catch.** Tail truncation and a full
+  rewrite by a local attacker remain undetectable (T-18). Review does
+  detect the *semantic* inconsistencies a partial rewrite leaves behind.
+- **Context composition.** Which results were in each turn's model
+  context is not recorded.
+- **Older streams.** Streams written before Phase 12 lack the facts and
+  are reported with `details_missing`.
+- **Over-blocking.** Screening can over-block phrasing such as
+  "api key: …" in an objective.
+- **Availability.** A model proposing credential-shaped parameters halts
+  its own investigation (fail closed).
+
 **`RuntimeExecutionLimits`** — admin-controlled configuration (trusted,
 versioned, not Agent-writable), analogous to `PolicySet`.
 

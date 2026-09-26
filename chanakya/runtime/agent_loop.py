@@ -822,7 +822,14 @@ class AgentLoopController:
             context.end_current_step()
             return TurnResult(outcome=TurnOutcome.MALFORMED_REQUEST, step_record=step, detail=str(exc))
 
-        self._audit.request_proposed(investigation_id, tool_request.tool_request_id)
+        # Phase 12: what was proposed, durable before the Gateway sees it.
+        self._audit.request_proposed(
+            investigation_id,
+            tool_request.tool_request_id,
+            tool_request=tool_request,
+            step_id=step.step_id,
+            attempt_number=attempt_number,
+        )
 
         step.transition(StepStatus.POLICY_EVALUATING)
         evaluation_context = EvaluationContext(
@@ -831,7 +838,9 @@ class AgentLoopController:
         )
         policy_decision = self._policy_evaluator.evaluate(dict(raw_tool_request), evaluation_context)
         step.set_policy_decision_id(policy_decision.policy_decision_id)
-        self._audit.policy_evaluated(investigation_id, tool_request.tool_request_id, policy_decision)
+        self._audit.policy_evaluated(
+            investigation_id, tool_request.tool_request_id, policy_decision, tool_request=tool_request
+        )
 
         if policy_decision.verdict == Verdict.DENY:
             # Never retried (denied request) — docs/AGENT-RUNTIME.md §12.
@@ -888,7 +897,7 @@ class AgentLoopController:
             expires_at=expires_at,
         )
         step.set_approval_request_id(approval_request.approval_request_id)
-        self._audit.approval_requested(approval_request)
+        self._audit.approval_requested(approval_request, step_id=step.step_id)
 
         if self._approval_provider is None:
             # RT-INV-3: no implicit/timeout-default approval. With no
@@ -1025,7 +1034,9 @@ class AgentLoopController:
             capability_envelope=envelope,
         )
         step.transition(StepStatus.EXECUTING)
-        self._audit.dispatch_started(investigation_id, tool_request.tool_request_id)
+        self._audit.dispatch_started(
+            investigation_id, tool_request.tool_request_id, instruction=instruction, step_id=step.step_id
+        )
 
         timeout_bound_executor = self._timeout_supervisor.bind(self._executor, timeout_seconds=timeout_seconds)
 

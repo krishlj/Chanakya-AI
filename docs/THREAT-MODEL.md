@@ -1223,6 +1223,48 @@ declared and what was enforced; it adds no trust boundary.
   *Residual:* enforcement is post-hoc (T-36, still deferred).
   CPU, memory and concurrency limits remain declarative.
 
+### Candidate threats from Phase 12 (durable authorization record)
+
+Both threats concern the detective controls behind T-15, T-16 and T-19
+(post-hoc audit review) on TB-4, TB-5 and TB-8. Phase 12 adds no trust
+boundary: the Review layer only reads.
+
+- **T-54 candidate — Unreconstructable authorization history.** Audit
+  events carried mostly ids, so the durable record could not show which
+  capability, target and parameters were proposed, denied, approved or
+  dispatched, under which envelope, or for which objective and requester.
+  Evidence exists only for successes.
+  *Controls:*
+  - additive `details` on existing events record origin, proposal
+    (canonical parameters plus hash), decision (capability, target,
+    verdict, classification, risk category, envelope summary), approval
+    risk context and resolved dispatch limits;
+  - unsafe facts fail closed;
+  - `chanakya.review` reconstructs and cross-checks the history, and
+    flags tampered or impossible sequences.
+
+  *Residual:*
+  - a local attacker who rewrites the whole chain and every store
+    consistently is not detected (T-18);
+  - the per-turn composition of model context is not recorded;
+  - streams written before Phase 12 lack the facts.
+- **T-55 candidate — Silent incomplete investigation.** A crash left an
+  audit stream with no terminal event, indistinguishable from a running
+  investigation, and cross-store inconsistencies went unreported.
+  *Controls:*
+  - Review reports `INCOMPLETE` whenever no terminal event is recorded;
+    it never reports `COMPLETED`;
+  - the terminal FAILED transition is marked explicitly;
+  - dispatches without results, and orphaned or missing Evidence, Findings
+    and RiskAssessments, are reported.
+
+  *Residual:*
+  - a running investigation and a crashed one look the same until the
+    process is known to be gone;
+  - tail truncation of a completed stream reads as `INCOMPLETE`, not as
+    tampering;
+  - there is no resume.
+
 ---
 
 ## 9. Security controls (consolidated)

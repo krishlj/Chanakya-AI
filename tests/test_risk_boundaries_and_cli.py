@@ -117,8 +117,10 @@ def test_cli_risk_files_never_contain_the_credential(tmp_path):
 
 
 def test_cli_adds_no_new_flags():
+    # Phase 10 added no flags. Phase 12 adds exactly one, the approved,
+    # read-only --review; nothing risk-related.
     options = {a.dest for a in cli_main._parser()._actions}
-    assert options == {"help", "objective", "model", "workdir", "approver", "require_approval", "max_turns"}
+    assert options == {"help", "objective", "model", "workdir", "approver", "require_approval", "max_turns", "review"}
 
 
 # ===========================================================================

@@ -30,10 +30,16 @@ labeled as rule-based, shown apart from the agent's own confidence, and a
 finding the rules cannot rate is shown as "not assessed". The rule set is
 not configurable here.
 
+Phase 12: ``--review <investigation_id>`` (``review_investigation``)
+rebuilds a past investigation from the durable stores through
+``chanakya.review``. It is read-only: it reads no credential, builds no
+Runtime, provider, Gateway or executor, and creates no files.
+
 Known gaps (deferred): the Agent's explanation text is not shown
-(``TurnResult`` does not carry it); investigation state is in memory only
-(Evidence and the Audit Log are durable); no justification is collected
-with an approval.
+(``TurnResult`` does not carry it); live investigation state is in memory
+only (Evidence, Findings, RiskAssessments and the Audit Log are durable, and
+reviewable with ``--review``); no justification is collected with an
+approval.
 """
 from __future__ import annotations
 
@@ -50,6 +56,7 @@ from typing import Any, Callable, Mapping, Optional, Sequence, TextIO, Tuple, Un
 
 from chanakya.approval import TerminalApprovalProvider
 from chanakya.audit import FilesystemAuditLog
+from chanakya.contracts.audit_details import AuditFactError
 from chanakya.contracts.enums import Verdict
 from chanakya.contracts.investigation_context import InvestigationContext
 from chanakya.contracts.investigation_request import InvestigationRequest
@@ -62,6 +69,7 @@ from chanakya.providers.config import ProviderConfig
 from chanakya.registry.bootstrap import production_registry_entries
 from chanakya.registry.registry import SecurityToolRegistry
 from chanakya.risk import RiskAssessmentStore, RiskEngine, StoreEvidenceFactsReader, verify_risk_provenance
+from chanakya.review import reconstruct_investigation
 from chanakya.runtime.agent_loop import AgentLoopController, AgentProvider, TurnOutcome, TurnResult
 from chanakya.runtime.audit import AuditEmitter
 from chanakya.runtime.clock import utcnow_iso
@@ -348,9 +356,128 @@ def _risk_lines(report: Any, finding_id: str) -> str:
     )
 
 
+def review_investigation(workdir: Union[str, Path], investigation_id: str, *, output: Optional[TextIO] = None) -> int:
+    """Phase 12, ``--review``: read-only reconstruction of a past
+    investigation from the durable stores under ``workdir``. No credential
+    is read and no provider, Runtime, Gateway or executor is built. The
+    stores are opened only if their directories already exist, so nothing
+    is created. Every value is rendered escaped. Exit 0 only for a verified,
+    consistent record."""
+    output = output if output is not None else sys.stdout
+    workdir = Path(workdir)
+    roots = {name: workdir / name for name in ("audit", "evidence", "findings", "risk")}
+    if not roots["audit"].is_dir():
+        output.write(f"review: {_safe(investigation_id)}\nstatus: \"not_found\" (no audit log under this workdir)\n")
+        return EXIT_NOT_COMPLETED
+    audit_log = FilesystemAuditLog(roots["audit"])
+    evidence_store = _ReadOnlyEvidence(roots["evidence"])
+    review = reconstruct_investigation(
+        investigation_id,
+        audit_log=audit_log,
+        evidence_store=evidence_store,
+        finding_store=FindingStore(roots["findings"]),
+        risk_store=RiskAssessmentStore(roots["risk"]),
+        risk_engine=RiskEngine(StoreEvidenceFactsReader(evidence_store)),
+    )
+    _render_review(output, review)
+    output.flush()
+    return EXIT_COMPLETED if review.consistent else EXIT_NOT_COMPLETED
+
+
+class _ReadOnlyEvidence(EvidenceStore):
+    """``EvidenceStore`` for review: never creates its root (the base
+    constructor would), and exposes no ``append``."""
+
+    def __init__(self, root: Path) -> None:  # noqa: D401 — deliberately does not call super().__init__
+        self._root = Path(root).resolve()
+
+    def append(self, *args: Any, **kwargs: Any):  # pragma: no cover - never called by review
+        raise PermissionError("review is read-only")
+
+
+def _render_review(output: TextIO, review: Any) -> None:
+    write = output.write
+    write(f"review: {_safe(review.investigation_id)}\n")
+    write(f"status: {_safe(review.status.value)}")
+    write(f" (reason: {_safe(review.terminal_reason)})\n" if review.terminal_reason else "\n")
+    write(f"audit chain: {'verified' if review.audit_verified else 'NOT VERIFIED'} ({review.audit_record_count} records)\n")
+    write(f"consistency: {'consistent' if review.consistent else f'{len(review.anomalies)} anomalies'}\n")
+    if review.origin is not None:
+        origin = review.origin
+        write(f"objective: {_safe_full(origin.objective)}\n")
+        write(f"submitted by: {_safe(origin.submitted_by)} at {_safe(origin.submitted_at)}\n")
+        write(f"request: {_safe(origin.investigation_request_id)}  targets: {_safe(list(origin.target_refs))}\n")
+    write(f"requests: {len(review.requests)}\n")
+    for number, request in enumerate(review.requests, start=1):
+        write(
+            f"  [{number}] {_safe(request.capability)} on {_safe(request.target_ref)}"
+            f" (step {_safe(request.step_id)}, attempt {request.attempt_number})\n"
+            f"      parameters: {_safe(request.parameters_canonical)} {_safe(request.parameters_hash)}\n"
+        )
+        policy = request.policy
+        if policy is None:
+            write("      policy: none recorded\n")
+        else:
+            write(
+                f"      policy: {_safe(policy.verdict)} by rule {_safe(policy.matched_rule)}"
+                f"; classification {_safe(policy.classification)}; risk category {_safe(policy.risk_category)}\n"
+                f"      reason: {_safe(policy.reason)}\n"
+            )
+            if policy.envelope_timeout_seconds is not None:
+                write(
+                    f"      envelope: timeout {policy.envelope_timeout_seconds}s, max output "
+                    f"{policy.envelope_max_output_bytes} bytes, schema {_safe(policy.envelope_output_schema_hash)}\n"
+                )
+        if request.approval is not None:
+            approval = request.approval
+            write(
+                f"      approval: requested for {_safe(approval.capability)} on {_safe(approval.target_ref)}"
+                f" with {_safe(approval.parameters_canonical)}; expires {_safe(approval.expires_at)};"
+                f" outcome {_safe(approval.outcome)} by {_safe(approval.decided_by)}\n"
+            )
+        if request.dispatch is not None:
+            dispatch = request.dispatch
+            write(
+                f"      dispatch: timeout {dispatch.resolved_timeout_seconds}s, max output {dispatch.max_output_bytes}"
+                f" bytes; result {_safe(dispatch.status)}"
+                + (f"; error {_safe(dispatch.error_message)}" if dispatch.error_message else "")
+                + "\n"
+            )
+        if request.evidence_id is not None:
+            write(f"      evidence: {_safe(request.evidence_id)}\n")
+    write(f"evidence records: {len(review.evidence)}\n")
+    for evidence in review.evidence:
+        write(
+            f"  {_safe(evidence.evidence_id)} {_safe(evidence.capability)} on {_safe(evidence.target_id)}"
+            f" ({'verified' if evidence.verified else 'NOT VERIFIED'})\n"
+        )
+    write(f"findings: {len(review.findings)} (agent opinions grounded in evidence; not verified facts)\n")
+    for finding in review.findings:
+        write(
+            f"  {_safe(finding.finding_id)} {_safe(finding.title)}\n"
+            f"      category {_safe(finding.category)}; agent-reported confidence {_safe(finding.confidence)};"
+            f" evidence {_safe(list(finding.evidence_refs))}\n"
+        )
+    write(f"risk assessments: {len(review.risk_assessments)} (rule-based; not independently verified)\n")
+    for risk in review.risk_assessments:
+        write(
+            f"  {_safe(risk.finding_id)}: severity {_safe(risk.severity)}, basis confidence {_safe(risk.confidence)}"
+            f" ({_safe(risk.scoring_method)})\n"
+        )
+    write(f"anomalies: {len(review.anomalies)}\n")
+    for anomaly in review.anomalies:
+        write(f"  - {_safe(anomaly.code)}" + (f" ({_safe(anomaly.subject)})" if anomaly.subject else "") + "\n")
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="chanakya", description="Run one Chanakya AI investigation of this host.")
-    parser.add_argument("objective", help="what to investigate")
+    parser.add_argument("objective", nargs="?", default=None, help="what to investigate")
+    parser.add_argument(
+        "--review",
+        metavar="INVESTIGATION_ID",
+        default=None,
+        help="read-only: reconstruct and verify a past investigation from --workdir (no model, no execution)",
+    )
     parser.add_argument("--model", default=DEFAULT_MODEL, help=f"model id (default: {DEFAULT_MODEL})")
     parser.add_argument("--workdir", default=".chanakya", help="where evidence and the audit log are stored")
     parser.add_argument("--approver", default=None, help="your name, recorded on approval decisions (default: OS user)")
@@ -369,6 +496,17 @@ def main(
     output = output if output is not None else sys.stdout
     args = _parser().parse_args(argv)
     environ = os.environ if environ is None else environ
+
+    # Phase 12: review mode is fully separate. It reads no credential,
+    # builds no Runtime, provider, Gateway or executor, and writes nothing.
+    if args.review is not None:
+        if args.objective is not None:
+            output.write("error: give either an objective or --review, not both\n")
+            return EXIT_CONFIG_ERROR
+        return review_investigation(args.workdir, args.review, output=output)
+    if args.objective is None:
+        output.write("error: an objective is required (or --review INVESTIGATION_ID)\n")
+        return EXIT_CONFIG_ERROR
 
     if args.max_turns < 1:
         output.write("error: --max-turns must be at least 1\n")
@@ -402,10 +540,18 @@ def main(
         return EXIT_CONFIG_ERROR
     del api_key
 
-    context, interrupted = run_investigation(runtime, agent, args.objective, max_turns=args.max_turns, output=output)
+    try:
+        context, interrupted = run_investigation(
+            runtime, agent, args.objective, max_turns=args.max_turns, output=output
+        )
+    except AuditFactError as exc:
+        # Phase 12 (D-1): the objective or origin facts could not be recorded
+        # safely, so no investigation was created. The value is not echoed.
+        output.write(f"error: investigation request rejected ({exc.code}: {exc.field})\n")
+        return EXIT_CONFIG_ERROR
     if interrupted:
         return EXIT_INTERRUPTED
     return EXIT_COMPLETED if context.status.value == "completed" else EXIT_NOT_COMPLETED
 
 
-__all__ = ["CliRuntime", "build_runtime", "main", "run_investigation"]
+__all__ = ["CliRuntime", "build_runtime", "main", "review_investigation", "run_investigation"]

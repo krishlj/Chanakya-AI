@@ -847,6 +847,27 @@ by inventing ad hoc strings): `investigation_started`, `request_proposed`,
   records — large or sensitive payloads (e.g. full `Evidence` content) are
   never inlined here.
 
+**Implementation (Phase 12): durable authorization facts.** `details` of
+five existing event types carry additive, bounded facts, defined in
+`chanakya/contracts/audit_details.py`: `investigation_started`,
+`request_proposed`, `policy_evaluated`, `approval_requested` and
+`dispatch_started`. The terminal `error` of a failed investigation carries
+`investigation_status: "failed"`.
+- **What is recorded:** objective and requester, proposed capability,
+  target and parameters, decision facts and an envelope summary, approval
+  risk context, and the resolved execution limits.
+- **Schema.** No `event_type` was added and `contract_version` is
+  unchanged.
+- **Objective.** Bounded text (2000 characters), credential-screened.
+- **Parameters.** Canonical JSON plus integrity hash, 4096 bytes maximum,
+  credential-screened.
+- **Envelopes.** Summarized with an output-schema hash rather than copied.
+- **Fail closed.** A fact that cannot be recorded safely fails the write
+  and halts the investigation; nothing is truncated or redacted.
+- **Review.** The read-only Investigation Review (`chanakya/review/`)
+  validates these facts against closed shapes. They are a durable record,
+  never an authorization input.
+
 **Security considerations**
 - Must never include raw secrets. When echoing something like an
   `ApprovalDecision.justification`, that string is subject to the same

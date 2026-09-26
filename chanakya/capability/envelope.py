@@ -162,7 +162,7 @@ def is_envelope_violation(error_message: Optional[str]) -> bool:
     return error_message[len(prefix):] in _ALL_REASON_CODES
 
 
-def _json_compatible(value: Any) -> bool:
+def is_json_compatible(value: Any) -> bool:
     """Iterative strict-JSON check: dict/list/str/int/float/bool/None only,
     string keys, finite numbers, depth ≤ MAX_SCHEMA_DEPTH."""
     stack = [(value, 0)]
@@ -194,7 +194,7 @@ def check_output(envelope: CapabilityEnvelope, output: Any) -> Optional[str]:
     if not isinstance(output, Mapping):
         return OUTPUT_NOT_A_MAPPING
     try:
-        if not _json_compatible(output):
+        if not is_json_compatible(output):
             return OUTPUT_NOT_SERIALIZABLE
         size = len(canonical_bytes(output))
     except (TypeError, ValueError, RecursionError):
@@ -222,6 +222,7 @@ __all__ = [
     "CapabilityEnvelopeError",
     "check_output",
     "envelope_from_registry_entry",
+    "is_json_compatible",
     "is_envelope_violation",
     "violation_message",
 ]

@@ -28,12 +28,21 @@ import uuid
 from typing import Any, List, Mapping, Optional, Protocol
 
 from chanakya.contracts.approval import ApprovalRequest
+from chanakya.contracts.audit_details import (
+    AuditFactError,
+    envelope_summary,
+    request_details,
+    risk_context_details,
+    text_fact,
+)
 from chanakya.contracts.audit_event import AuditEvent, AuditEventType, AuditSeverity
 from chanakya.contracts.policy_decision import PolicyDecision
 from chanakya.contracts.risk_assessment import RiskAssessment
+from chanakya.contracts.tool_request import ToolRequest
 from chanakya.contracts.tool_result import ToolResult
 
 from .clock import utcnow_iso
+from .dispatch import DispatchInstruction
 from .exceptions import AuditSinkError
 
 _CONTRACT_VERSION = "1.0.0"
@@ -61,6 +70,19 @@ class InMemoryAuditSink:
 
     def emit(self, event: AuditEvent) -> None:
         self.events.append(event)
+
+
+def _facts(build):
+    """Builds Phase 12 durable facts. A fact that cannot be recorded safely
+    (credential-shaped, too large, not serializable) is an audit write
+    failure: ``AuditSinkError`` with a fixed code, so the existing Runtime
+    backstop halts before the action proceeds (RT-INV-6)."""
+    try:
+        return build()
+    except AuditFactError as exc:
+        raise AuditSinkError(f"audit fact rejected: {exc.code} ({exc.field})") from None
+    except (KeyError, TypeError, AttributeError):
+        raise AuditSinkError("audit fact rejected: FACT_INVALID") from None
 
 
 class AuditEmitter:
@@ -109,12 +131,18 @@ class AuditEmitter:
 
     # -- investigation lifecycle (also usable by InvestigationManager) --
 
-    def investigation_started(self, investigation_id: str, *, actor: str = "system") -> AuditEvent:
+    def investigation_started(
+        self, investigation_id: str, *, origin: Optional[Mapping[str, Any]] = None, actor: str = "system"
+    ) -> AuditEvent:
+        """Phase 12: ``origin`` is the ``investigation_started`` details built
+        by ``chanakya.contracts.audit_details.origin_details`` (request id,
+        requester, submission time, target scope, bounded objective)."""
         return self._emit(
             AuditEventType.INVESTIGATION_STARTED,
             actor=actor,
             investigation_id=investigation_id,
             related_ids={"investigation_id": investigation_id},
+            details=dict(origin) if origin is not None else None,
         )
 
     def investigation_completed(self, investigation_id: str, *, actor: str = "system") -> AuditEvent:
@@ -159,27 +187,89 @@ class AuditEmitter:
 
     # -- per-step pipeline (Agent Loop Controller) ------------------------
 
-    def request_proposed(self, investigation_id: str, tool_request_id: str, *, actor: str = "agent") -> AuditEvent:
+    def request_proposed(
+        self,
+        investigation_id: str,
+        tool_request_id: str,
+        *,
+        tool_request: Optional[ToolRequest] = None,
+        step_id: Optional[str] = None,
+        attempt_number: Optional[int] = None,
+        actor: str = "agent",
+    ) -> AuditEvent:
+        """Phase 12: with ``tool_request``, records what was proposed:
+        capability, target, the Runtime step and attempt, and the
+        parameters as canonical JSON plus integrity hash (D-2)."""
+        details = None
+        if tool_request is not None:
+            details = _facts(
+                lambda: request_details(
+                    capability=tool_request.capability,
+                    target_ref=tool_request.target_ref,
+                    step_id=step_id,
+                    attempt_number=attempt_number,
+                    parameters=tool_request.parameters,
+                )
+            )
         return self._emit(
             AuditEventType.REQUEST_PROPOSED,
             actor=actor,
             investigation_id=investigation_id,
             related_ids={"tool_request_id": tool_request_id},
+            details=details,
         )
 
     def policy_evaluated(
-        self, investigation_id: str, tool_request_id: str, decision: PolicyDecision, *, actor: str = "system"
+        self,
+        investigation_id: str,
+        tool_request_id: str,
+        decision: PolicyDecision,
+        *,
+        tool_request: Optional[ToolRequest] = None,
+        actor: str = "system",
     ) -> AuditEvent:
+        """Phase 12: with ``tool_request``, also records the capability and
+        target the decision covers, the Registry classification and risk
+        category snapshots, and a summary of the authorized envelope
+        (limits plus output-schema hash). Facts only; this record never
+        authorizes anything."""
+        details: dict = {"verdict": decision.verdict.value, "matched_rule": decision.matched_rule, "reason": decision.reason}
+        if tool_request is not None:
+            details.update(
+                _facts(
+                    lambda: {
+                        "capability": text_fact("capability", tool_request.capability),
+                        "target_ref": text_fact("target_ref", tool_request.target_ref),
+                        "classification": decision.classification.value if decision.classification else None,
+                        "risk_category": decision.risk_category.value if decision.risk_category else None,
+                        "envelope": envelope_summary(decision.capability_envelope),
+                    }
+                )
+            )
         return self._emit(
             AuditEventType.POLICY_EVALUATED,
             actor=actor,
             investigation_id=investigation_id,
             related_ids={"tool_request_id": tool_request_id, "policy_decision_id": decision.policy_decision_id},
-            details={"verdict": decision.verdict.value, "matched_rule": decision.matched_rule, "reason": decision.reason},
+            details=details,
             severity=AuditSeverity.INFO,
         )
 
-    def approval_requested(self, approval_request: ApprovalRequest, *, actor: str = "system") -> AuditEvent:
+    def approval_requested(
+        self, approval_request: ApprovalRequest, *, step_id: Optional[str] = None, actor: str = "system"
+    ) -> AuditEvent:
+        """Phase 12: with ``step_id``, records what the approver was asked
+        to approve: the ``risk_context`` facts (capability, target,
+        canonical parameters and hash) and ``expires_at``."""
+        details = None
+        if step_id is not None:
+            details = _facts(
+                lambda: {
+                    "step_id": text_fact("step_id", step_id),
+                    "expires_at": text_fact("expires_at", approval_request.expires_at, optional=True),
+                    "risk_context": risk_context_details(approval_request.risk_context),
+                }
+            )
         return self._emit(
             AuditEventType.APPROVAL_REQUESTED,
             actor=actor,
@@ -189,6 +279,7 @@ class AuditEmitter:
                 "policy_decision_id": approval_request.policy_decision_id,
                 "approval_request_id": approval_request.approval_request_id,
             },
+            details=details,
         )
 
     def approval_decided(
@@ -214,12 +305,38 @@ class AuditEmitter:
             details=details,
         )
 
-    def dispatch_started(self, investigation_id: str, tool_request_id: str, *, actor: str = "system") -> AuditEvent:
+    def dispatch_started(
+        self,
+        investigation_id: str,
+        tool_request_id: str,
+        *,
+        instruction: Optional[DispatchInstruction] = None,
+        step_id: Optional[str] = None,
+        actor: str = "system",
+    ) -> AuditEvent:
+        """Phase 12: with ``instruction``, records what is about to run,
+        taken from the ``DispatchInstruction`` itself so the record cannot
+        claim a different envelope: capability, target, step, attempt,
+        resolved timeout and output limit, and the authorizing decision."""
+        details = None
+        if instruction is not None:
+            details = _facts(
+                lambda: {
+                    "capability": text_fact("capability", instruction.capability),
+                    "target_ref": text_fact("target_ref", instruction.target_ref),
+                    "step_id": text_fact("step_id", step_id),
+                    "attempt_number": instruction.attempt_number,
+                    "resolved_timeout_seconds": instruction.resolved_timeout_seconds,
+                    "max_output_bytes": instruction.resolved_resource_limits["max_output_bytes"],
+                    "policy_decision_id": text_fact("policy_decision_id", instruction.policy_decision_id),
+                }
+            )
         return self._emit(
             AuditEventType.DISPATCH_STARTED,
             actor=actor,
             investigation_id=investigation_id,
             related_ids={"tool_request_id": tool_request_id},
+            details=details,
         )
 
     def dispatch_completed(self, investigation_id: str, tool_result: ToolResult, *, actor: str = "system") -> AuditEvent:

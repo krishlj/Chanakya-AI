@@ -17,6 +17,7 @@ from __future__ import annotations
 import uuid
 from typing import Any, Mapping, Optional
 
+from chanakya.contracts.audit_details import origin_details
 from chanakya.contracts.investigation_context import InvestigationContext, InvestigationStatus
 from chanakya.contracts.investigation_request import InvestigationRequest
 from chanakya.targets.registry import TargetRegistry
@@ -58,6 +59,18 @@ class InvestigationManager:
             if self._targets.get(target_id) is None:
                 raise UnknownTargetError(f"requested target is not registered: {target_id!r}")
 
+        # Phase 12 (D-1): the durable origin facts are built and screened
+        # before anything is created. An objective or identity that cannot
+        # be recorded safely raises AuditFactError and no investigation
+        # exists.
+        origin = origin_details(
+            investigation_request_id=request.investigation_request_id,
+            submitted_by=request.submitted_by,
+            submitted_at=request.submitted_at,
+            target_refs=tuple(request.requested_targets),
+            objective=request.objective,
+        )
+
         context = InvestigationContext(
             investigation_id=str(uuid.uuid4()),
             contract_version=_CONTRACT_VERSION,
@@ -69,7 +82,7 @@ class InvestigationManager:
         )
         self._store.create(context)
         self._governor.register_investigation(context.investigation_id)
-        self._audit.investigation_started(context.investigation_id)
+        self._audit.investigation_started(context.investigation_id, origin=origin)
         return context
 
     def start(self, investigation_id: str) -> None:
@@ -107,7 +120,10 @@ class InvestigationManager:
         error_state = {"reason": reason, **(dict(details) if details else {})}
         context.transition_status(InvestigationStatus.FAILED, error_state=error_state)
         self._governor.release_investigation(investigation_id)
-        self._audit.error(investigation_id, reason=reason, details=details)
+        # Phase 12: marks this `error` as the investigation's terminal FAILED
+        # transition, distinct from a non-terminal backstop `error` event.
+        terminal = {**(dict(details) if details else {}), "investigation_status": "failed"}
+        self._audit.error(investigation_id, reason=reason, details=terminal)
 
     def halt(self, investigation_id: str, *, reason: str, details: Optional[Mapping[str, Any]] = None) -> None:
         """running|awaiting_approval -> halted (governance stop: operator

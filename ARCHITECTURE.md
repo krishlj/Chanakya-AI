@@ -350,6 +350,33 @@ rewrite by a local attacker are not detectable without an external
 anchor. Design, invariants (AL-INV-1..9) and limitations:
 `docs/AGENT-RUNTIME.md` §14.
 
+**Status (Phase 12):** the audit stream is a durable authorization record.
+
+- **Recorded facts.** Existing events carry additive, bounded,
+  credential-screened `details`. No new event types were added.
+  - `investigation_started`: objective, requester, target scope.
+  - `request_proposed`: capability, target, step, attempt, canonical
+    parameters and their hash.
+  - `policy_evaluated`: capability, target, verdict, classification, risk
+    category, authorized envelope summary.
+  - `approval_requested`: what the approver was shown.
+  - `dispatch_started`: the resolved timeout and output limit.
+- **Unsafe facts fail closed.** An objective that cannot be recorded
+  safely creates no investigation. Unsafe parameters halt it before policy
+  evaluation.
+- **Investigation Review.** `chanakya.review` (CLI `--review
+  <investigation_id>`) rebuilds a past investigation read-only from the
+  audit stream, Evidence, Findings and RiskAssessments. It verifies the
+  chain and cross-store consistency, reports orphans and cross-investigation
+  references, and reports a stream without a terminal event as
+  `incomplete`, never as completed. It authorizes, executes and writes
+  nothing.
+- **Still in memory.** Live Runtime state (`InvestigationContext`,
+  `StepRecord`s) remains in memory; there is no persistence or resume.
+
+See `docs/AGENT-RUNTIME.md` "Durable authorization record and
+investigation review (Phase 12)".
+
 ## 15. Configuration and Secrets Management
 
 - **Configuration** (policy rules, tool registry definitions, target
