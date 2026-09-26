@@ -40,15 +40,15 @@ from typing import Any, Dict, Tuple
 from .enums import SUPPORTED_CONTRACT_VERSIONS, RiskCategory
 from .finding import MAX_EVIDENCE_REFS, _TEXT_CREDENTIAL_PATTERN
 from .risk_taxonomy import (
-    READ_ONLY_SEVERITY_CEILING,
-    RISK_RULE_SET_V1,
-    RISK_TAXONOMY_V1,
     RULE_CEILING_READ_ONLY,
     RULE_COMPAT_ALL,
     RULE_COMPAT_PARTIAL,
     RULE_EVIDENCE_VERIFIED,
-    RULE_IDS_V1,
     SEVERITY_ORDER,
+    RiskRuleSet,
+    RiskRuleSetError,
+    registered_scoring_methods,
+    resolve_rule_set,
 )
 from .target import _CREDENTIAL_PARAM_PATTERN, _URL_USERINFO_PATTERN
 
@@ -58,10 +58,17 @@ MAX_RULE_IDS = 16
 #: One assessment per Finding, and Phase 9 caps an investigation at 20.
 MAX_RISK_ASSESSMENTS_PER_INVESTIGATION = 20
 
-#: Rule sets a RiskAssessment may name, with their rule-id vocabulary. An
-#: unknown ``scoring_method`` is invalid, including in a stored record.
-SUPPORTED_SCORING_METHODS = frozenset({RISK_RULE_SET_V1})
-_RULE_IDS_BY_METHOD = {RISK_RULE_SET_V1: RULE_IDS_V1}
+#: The production rule sets a RiskAssessment may name (Phase 13: resolved
+#: through ``chanakya.contracts.risk_taxonomy.resolve_rule_set``). An unknown
+#: ``scoring_method`` is invalid, including in a stored record.
+SUPPORTED_SCORING_METHODS = registered_scoring_methods()
+
+
+def _rule_set_for(owner: str, scoring_method: Any) -> RiskRuleSet:
+    try:
+        return resolve_rule_set(scoring_method)
+    except RiskRuleSetError:
+        raise RiskAssessmentValidationError(f"{owner}.scoring_method is not a supported rule set") from None
 
 #: Fixed namespace for deterministic ids (uuid5 of "urn:chanakya:risk-assessment").
 RISK_ASSESSMENT_ID_NAMESPACE = uuid.UUID("0f8d4a4c-89ad-5e05-b0d1-4b1023a25e9c")
@@ -126,8 +133,7 @@ class RiskAssessment:
             raise RiskAssessmentValidationError("RiskAssessment.contract_version is not supported")
         if self.assessed_by != ASSESSED_BY:
             raise RiskAssessmentValidationError(f"RiskAssessment.assessed_by must be {ASSESSED_BY!r}")
-        if self.scoring_method not in SUPPORTED_SCORING_METHODS:
-            raise RiskAssessmentValidationError("RiskAssessment.scoring_method is not a supported rule set")
+        rule_set = _rule_set_for("RiskAssessment", self.scoring_method)
         _require_id_tuple("finding_refs", self.finding_refs, max_items=1)
         _require_id_tuple("evidence_refs", self.evidence_refs, max_items=MAX_EVIDENCE_REFS)
         if self.risk_assessment_id != derive_risk_assessment_id(
@@ -138,14 +144,16 @@ class RiskAssessment:
             raise RiskAssessmentValidationError("RiskAssessment.severity must be a RiskCategory")
         if self.confidence not in _CONFIDENCES:
             raise RiskAssessmentValidationError("RiskAssessment.confidence must be low, medium or high")
-        self._check_rules()
+        self._check_rules(rule_set)
         self._check_rationale()
 
-    def _check_rules(self) -> None:
+    def _check_rules(self, rule_set: RiskRuleSet) -> None:
+        """Validates under the rule set the record names (Phase 13), never
+        under whichever rule set happens to be active."""
         rules = self.rule_ids
         if type(rules) is not tuple or not rules or len(rules) > MAX_RULE_IDS:
             raise RiskAssessmentValidationError(f"RiskAssessment.rule_ids must be a tuple of 1..{MAX_RULE_IDS} ids")
-        vocabulary = _RULE_IDS_BY_METHOD[self.scoring_method]
+        vocabulary = rule_set.rule_ids
         for rule in rules:
             if type(rule) is not str or not _RULE_ID.match(rule) or rule not in vocabulary:
                 raise RiskAssessmentValidationError("RiskAssessment.rule_ids contains an unknown rule id")
@@ -155,7 +163,7 @@ class RiskAssessment:
         if len(rules) not in (4, 5) or rules[0] != RULE_EVIDENCE_VERIFIED:
             raise RiskAssessmentValidationError("RiskAssessment.rule_ids does not have the rule-set shape")
         category = rules[1][len("category."):] if rules[1].startswith("category.") else None
-        if category not in RISK_TAXONOMY_V1:
+        if category not in rule_set.taxonomy:
             raise RiskAssessmentValidationError("RiskAssessment.rule_ids does not name a rated category")
         if rules[2] not in (RULE_COMPAT_ALL, RULE_COMPAT_PARTIAL):
             raise RiskAssessmentValidationError("RiskAssessment.rule_ids does not have the rule-set shape")
@@ -166,12 +174,12 @@ class RiskAssessment:
             raise RiskAssessmentValidationError("RiskAssessment.confidence does not match its rule")
         if (rules[2] == RULE_COMPAT_PARTIAL) != (self.confidence == "low"):
             raise RiskAssessmentValidationError("RiskAssessment.confidence does not match its compatibility rule")
-        expected = RISK_TAXONOMY_V1[category].base_severity
-        if ceiling and severity_rank(expected) > severity_rank(READ_ONLY_SEVERITY_CEILING):
-            expected = READ_ONLY_SEVERITY_CEILING
+        expected = rule_set.taxonomy[category].base_severity
+        if ceiling and severity_rank(expected) > severity_rank(rule_set.read_only_severity_ceiling):
+            expected = rule_set.read_only_severity_ceiling
         if self.severity.value != expected:
             raise RiskAssessmentValidationError("RiskAssessment.severity does not follow its rule set")
-        if self.severity == RiskCategory.CRITICAL:
+        if severity_rank(self.severity.value) > severity_rank(rule_set.max_severity):
             raise RiskAssessmentValidationError("RiskAssessment.severity exceeds the rule-set ceiling")
 
     def _check_rationale(self) -> None:
@@ -255,22 +263,30 @@ class NotAssessedFinding:
 
     finding_id: str
     reason: str
+    #: Phase 13: the rule set under which assessment was attempted.
+    scoring_method: str
 
     def __post_init__(self) -> None:
         if type(self.finding_id) is not str or not self.finding_id:
             raise RiskAssessmentValidationError("NotAssessedFinding.finding_id must be a non-empty string")
         if self.reason not in NOT_ASSESSED_REASONS:
             raise RiskAssessmentValidationError("NotAssessedFinding.reason is not a known reason")
+        _rule_set_for("NotAssessedFinding", self.scoring_method)
 
 
 @dataclass(frozen=True)
 class RiskEngineResult:
     """What a Risk Engine returns for one batch of Findings: every Finding
     appears exactly once, either assessed or not assessed. The Runtime
-    re-checks that before storing anything."""
+    re-checks that before storing anything.
+
+    Phase 13: ``scoring_method`` names the one rule set the whole batch was
+    produced under; every assessment and not-assessed entry must name the
+    same one."""
 
     assessments: Tuple[RiskAssessment, ...]
     not_assessed: Tuple[NotAssessedFinding, ...]
+    scoring_method: str
 
     def __post_init__(self) -> None:
         if type(self.assessments) is not tuple or not all(isinstance(a, RiskAssessment) for a in self.assessments):
@@ -279,6 +295,9 @@ class RiskEngineResult:
             isinstance(n, NotAssessedFinding) for n in self.not_assessed
         ):
             raise RiskAssessmentValidationError("RiskEngineResult.not_assessed must be a tuple of NotAssessedFinding")
+        _rule_set_for("RiskEngineResult", self.scoring_method)
+        if any(item.scoring_method != self.scoring_method for item in self.assessments + self.not_assessed):
+            raise RiskAssessmentValidationError("RiskEngineResult mixes rule sets")
 
 
 __all__ = [

@@ -59,6 +59,7 @@ from chanakya.audit import FilesystemAuditLog
 from chanakya.contracts.audit_details import AuditFactError
 from chanakya.contracts.enums import Verdict
 from chanakya.contracts.investigation_context import InvestigationContext
+from chanakya.contracts.risk_taxonomy import active_rule_set
 from chanakya.contracts.investigation_request import InvestigationRequest
 from chanakya.contracts.target import Target, TargetStatus
 from chanakya.evidence import EvidenceStore
@@ -193,7 +194,10 @@ def build_runtime(
     evidence_store = EvidenceStore(workdir / "evidence")
     finding_store = FindingStore(workdir / "findings")
     risk_store = RiskAssessmentStore(workdir / "risk")
-    risk_engine = RiskEngine(StoreEvidenceFactsReader(evidence_store))
+    # Phase 13: the one active rule set comes from trusted code, never from
+    # arguments, environment, configuration or the model.
+    rule_set = active_rule_set()
+    risk_engine = RiskEngine(StoreEvidenceFactsReader(evidence_store), rule_set=rule_set)
     audit_log = FilesystemAuditLog(workdir / "audit")
     audit = AuditEmitter(audit_log)
 
@@ -212,6 +216,7 @@ def build_runtime(
         finding_recorder=finding_store,
         risk_assessor=risk_engine,
         risk_recorder=risk_store,
+        risk_rule_set=rule_set,
     )
     return CliRuntime(
         registry=registry,
@@ -377,7 +382,8 @@ def review_investigation(workdir: Union[str, Path], investigation_id: str, *, ou
         evidence_store=evidence_store,
         finding_store=FindingStore(roots["findings"]),
         risk_store=RiskAssessmentStore(roots["risk"]),
-        risk_engine=RiskEngine(StoreEvidenceFactsReader(evidence_store)),
+        # Recomputation resolves each assessment's recorded rule set from here.
+        risk_engine=RiskEngine(StoreEvidenceFactsReader(evidence_store), rule_set=active_rule_set()),
     )
     _render_review(output, review)
     output.flush()

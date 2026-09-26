@@ -620,6 +620,23 @@ rule-set data in `chanakya/contracts/risk_taxonomy.py`, engine in
     Registry or the Tool Layer reads a RiskAssessment.
   - `ApprovalRequest.risk_assessment_ref` stays unset.
 
+**Implementation (Phase 13): versioned rule sets.** `scoring_method` is the
+authoritative identity of the rule set a result was produced under.
+- **Registry.** A `RiskRuleSet` (`chanakya/contracts/risk_taxonomy.py`)
+  holds the taxonomy, the closed rule-id vocabulary, the read-only ceiling
+  and the maximum severity. Rule sets are resolved only through an
+  immutable, code-defined registry. It contains v1 only, and v1's data and
+  outputs are unchanged, verified by a golden fixture captured before
+  Phase 13.
+- **Validation.** A RiskAssessment is validated under the rule set it
+  names. An unknown `scoring_method` is rejected on write and on read,
+  with no fallback.
+- **Required provenance.** `NotAssessedFinding` and `RiskEngineResult`
+  gained a required `scoring_method`. A batch may not mix rule sets.
+- **Stable ids.** The deterministic `risk_assessment_id` already includes
+  `scoring_method`, so v1 ids are unchanged. A future rule set produces
+  distinct ids, i.e. new artifacts rather than rewritten ones.
+
 **Security considerations**
 - Must be rendered by every consumer as an assessment/opinion label,
   visually and structurally distinct from `Evidence`.

@@ -1488,6 +1488,67 @@ finding text). Then `complete()`.
 - **Partial state.** An RA written before a failed `risk_assessed` event
   stays durable without its event.
 
+#### Versioned risk rule sets (Phase 13)
+
+**Rule sets.** A rule set is an immutable `RiskRuleSet` in
+`chanakya/contracts/risk_taxonomy.py`, identified by its `scoring_method`.
+- **Registry.** The registry is an immutable mapping defined in code. It
+  holds only `chanakya-risk-rules/1.0.0`, whose data is unchanged.
+  `resolve_rule_set` raises for any other name; there is no fallback.
+- **Active rule set.** `active_rule_set()` is the one rule set new
+  assessments are produced under. It is read only by the CLI composition
+  root (to build the engine and the controller) and by the provider (for
+  the category vocabulary).
+
+**Runtime.** `AgentLoopController(..., risk_rule_set=...)` requires exactly
+one registered rule set whenever risk assessment is configured; a
+malformed, unregistered or altered definition is refused at construction.
+`_validate_risk_result` rejects a batch unless the batch, every assessment
+and every not-assessed entry name the active rule set. Category, ceiling
+and not-assessed-reason checks use that rule set. Nothing is re-labelled
+or downgraded.
+
+**Engine.** `RiskEngine(reader, *, rule_set=...)` has no default and refuses
+an unregistered definition. `for_scoring_method(name)` returns an engine
+over the same reader, bound to the registered rule set with that name, and
+raises for an unknown name. This is how history is recomputed.
+
+**Verification.**
+- `verify_risk_provenance` (the current run's display) recomputes each
+  stored assessment under its recorded rule set, and reports
+  `scoring_method_not_active` for any rule set other than the active one.
+- Review (historical) recomputes each stored assessment under its recorded
+  rule set. It checks coverage only under the rule set the investigation's
+  own records name, and reports unknown, mixed or audit-mismatched rule
+  sets as anomalies. It never substitutes the active rule set.
+
+**Provider.** The `report_findings` category enum is built per request from
+the active rule set's categories. The schema template is never mutated.
+
+| ID | Invariant | Tests (`tests/test_risk_rule_sets.py`) |
+|---|---|---|
+| RV-INV-1 | Every RiskAssessment, NotAssessedFinding and RiskEngineResult carries explicit `scoring_method` provenance. | `test_every_engine_output_carries_its_scoring_method`, `test_results_cannot_mix_or_omit_rule_sets`, `test_provenance_survives_serialization_and_storage` |
+| RV-INV-2 | A risk result is validated and recomputed only under its recorded rule set. | `test_assessments_are_validated_under_the_rule_set_they_name`, `test_review_recomputes_under_the_recorded_rule_set`, `test_historical_v1_assessments_are_never_reinterpreted`, `test_current_run_verifier_recomputes_under_the_recorded_set_and_flags_non_active` |
+| RV-INV-3 | v1 output is byte-identical to Phase 12 (golden). | `test_v1_outputs_are_byte_identical_to_the_pre_phase_13_golden`, `test_v1_taxonomy_severities_and_compatibility_are_frozen`, `test_provider_vocabulary_is_v1_and_unchanged` |
+| RV-INV-4 | The Runtime accepts exactly one trusted active rule set and never downgrades. | `test_runtime_requires_exactly_one_registered_active_rule_set`, `test_runtime_rejects_results_from_a_rule_set_other_than_the_active_one`, `test_runtime_never_downgrades_to_v1` |
+| RV-INV-5 | Rule sets are code-defined and cannot be selected or modified by the model, tools, findings, evidence, requests, the CLI, the environment or files. | `test_model_supplied_scoring_method_is_rejected`, `test_evidence_payload_cannot_select_a_rule_set`, `test_cli_has_no_rule_set_option`, `test_environment_cannot_select_a_rule_set`, `test_rule_sets_are_never_loaded_from_files_environment_or_imports`, `test_registry_and_rule_sets_are_immutable` |
+| RV-INV-6 | Unknown or mismatched rule sets fail closed. | `test_unknown_rule_sets_fail_closed_without_fallback`, `test_review_fails_closed_when_the_recorded_rule_set_is_unavailable`, `test_review_flags_an_unknown_rule_set_named_in_the_audit`, `test_engine_requires_a_registered_rule_set` |
+
+The second rule set these tests use (`test-only/risk-rules-9`) exists only
+in the test file and is registered only for the duration of a test.
+
+**Limitations.**
+- The registry is a module-level immutable mapping, not an injected
+  object. Tests register their rule set by temporarily replacing it, and
+  anyone able to change the code can change the registry (as with any
+  code).
+- Review can check coverage only when the investigation's records name a
+  rule set. With no stored assessments and no `risk_assessed` events,
+  whether a finding should have been rated cannot be decided from durable
+  history.
+- Historical reassessment and v2 content are deliberately not
+  implemented.
+
 #### Capability execution envelope (Phase 11)
 
 Every capability execution is constrained by an immutable

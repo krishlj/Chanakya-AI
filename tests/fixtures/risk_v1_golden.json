@@ -1,0 +1,293 @@
+{
+ "assessments": [
+  {
+   "assessed_at": "2026-01-01T00:00:00Z",
+   "assessed_by": "risk_engine",
+   "confidence": "medium",
+   "contract_version": "1.0.0",
+   "evidence_refs": [
+    "ev-llp"
+   ],
+   "finding_refs": [
+    "f-netexp"
+   ],
+   "investigation_id": "inv-golden",
+   "rationale": "Rule set chanakya-risk-rules/1.0.0. evidence.verified: 1 cited evidence record(s) verified in this investigation. category.network_exposure: category network_exposure has base severity medium. compat.all: compatible evidence capabilities: list_listening_ports; incompatible: none. ceiling.read_only: all cited evidence is read_only, so severity is at most high. confidence.medium: all cited evidence is compatible. Result: severity medium, basis confidence medium. This rates the category and evidence provenance only; it does not verify the finding.",
+   "risk_assessment_id": "6a7da172-e586-5a3a-b65c-f10d030d2997",
+   "rule_ids": [
+    "evidence.verified",
+    "category.network_exposure",
+    "compat.all",
+    "ceiling.read_only",
+    "confidence.medium"
+   ],
+   "scoring_method": "chanakya-risk-rules/1.0.0",
+   "severity": "medium"
+  },
+  {
+   "assessed_at": "2026-01-01T00:00:00Z",
+   "assessed_by": "risk_engine",
+   "confidence": "medium",
+   "contract_version": "1.0.0",
+   "evidence_refs": [
+    "ev-llp",
+    "ev-llp2"
+   ],
+   "finding_refs": [
+    "f-netexp-2"
+   ],
+   "investigation_id": "inv-golden",
+   "rationale": "Rule set chanakya-risk-rules/1.0.0. evidence.verified: 2 cited evidence record(s) verified in this investigation. category.network_exposure: category network_exposure has base severity medium. compat.all: compatible evidence capabilities: list_listening_ports; incompatible: none. ceiling.read_only: all cited evidence is read_only, so severity is at most high. confidence.medium: all cited evidence is compatible. Result: severity medium, basis confidence medium. This rates the category and evidence provenance only; it does not verify the finding.",
+   "risk_assessment_id": "5ff4311a-9a49-558c-9bc5-c34e5def827f",
+   "rule_ids": [
+    "evidence.verified",
+    "category.network_exposure",
+    "compat.all",
+    "ceiling.read_only",
+    "confidence.medium"
+   ],
+   "scoring_method": "chanakya-risk-rules/1.0.0",
+   "severity": "medium"
+  },
+  {
+   "assessed_at": "2026-01-01T00:00:00Z",
+   "assessed_by": "risk_engine",
+   "confidence": "low",
+   "contract_version": "1.0.0",
+   "evidence_refs": [
+    "ev-llp",
+    "ev-env"
+   ],
+   "finding_refs": [
+    "f-netexp-partial"
+   ],
+   "investigation_id": "inv-golden",
+   "rationale": "Rule set chanakya-risk-rules/1.0.0. evidence.verified: 2 cited evidence record(s) verified in this investigation. category.network_exposure: category network_exposure has base severity medium. compat.partial: compatible evidence capabilities: list_listening_ports; incompatible: observe_local_host_environment. ceiling.read_only: all cited evidence is read_only, so severity is at most high. confidence.low: only some cited evidence is compatible. Result: severity medium, basis confidence low. This rates the category and evidence provenance only; it does not verify the finding.",
+   "risk_assessment_id": "4a889c4b-d8b6-5765-99d8-70bda8dcdaa3",
+   "rule_ids": [
+    "evidence.verified",
+    "category.network_exposure",
+    "compat.partial",
+    "ceiling.read_only",
+    "confidence.low"
+   ],
+   "scoring_method": "chanakya-risk-rules/1.0.0",
+   "severity": "medium"
+  },
+  {
+   "assessed_at": "2026-01-01T00:00:00Z",
+   "assessed_by": "risk_engine",
+   "confidence": "medium",
+   "contract_version": "1.0.0",
+   "evidence_refs": [
+    "ev-llp-sc"
+   ],
+   "finding_refs": [
+    "f-netexp-sc"
+   ],
+   "investigation_id": "inv-golden",
+   "rationale": "Rule set chanakya-risk-rules/1.0.0. evidence.verified: 1 cited evidence record(s) verified in this investigation. category.network_exposure: category network_exposure has base severity medium. compat.all: compatible evidence capabilities: list_listening_ports; incompatible: none. confidence.medium: all cited evidence is compatible. Result: severity medium, basis confidence medium. This rates the category and evidence provenance only; it does not verify the finding.",
+   "risk_assessment_id": "6076d23a-43c8-54f2-8750-f819cdb9403e",
+   "rule_ids": [
+    "evidence.verified",
+    "category.network_exposure",
+    "compat.all",
+    "confidence.medium"
+   ],
+   "scoring_method": "chanakya-risk-rules/1.0.0",
+   "severity": "medium"
+  },
+  {
+   "assessed_at": "2026-01-01T00:00:00Z",
+   "assessed_by": "risk_engine",
+   "confidence": "medium",
+   "contract_version": "1.0.0",
+   "evidence_refs": [
+    "ev-llp",
+    "ev-llp-sc"
+   ],
+   "finding_refs": [
+    "f-netexp-mixed"
+   ],
+   "investigation_id": "inv-golden",
+   "rationale": "Rule set chanakya-risk-rules/1.0.0. evidence.verified: 2 cited evidence record(s) verified in this investigation. category.network_exposure: category network_exposure has base severity medium. compat.all: compatible evidence capabilities: list_listening_ports; incompatible: none. confidence.medium: all cited evidence is compatible. Result: severity medium, basis confidence medium. This rates the category and evidence provenance only; it does not verify the finding.",
+   "risk_assessment_id": "b7a7f34c-f75e-5f93-be80-645458f9990e",
+   "rule_ids": [
+    "evidence.verified",
+    "category.network_exposure",
+    "compat.all",
+    "confidence.medium"
+   ],
+   "scoring_method": "chanakya-risk-rules/1.0.0",
+   "severity": "medium"
+  },
+  {
+   "assessed_at": "2026-01-01T00:00:00Z",
+   "assessed_by": "risk_engine",
+   "confidence": "medium",
+   "contract_version": "1.0.0",
+   "evidence_refs": [
+    "ev-llp"
+   ],
+   "finding_refs": [
+    "f-unexp"
+   ],
+   "investigation_id": "inv-golden",
+   "rationale": "Rule set chanakya-risk-rules/1.0.0. evidence.verified: 1 cited evidence record(s) verified in this investigation. category.unexpected_listener: category unexpected_listener has base severity low. compat.all: compatible evidence capabilities: list_listening_ports; incompatible: none. ceiling.read_only: all cited evidence is read_only, so severity is at most high. confidence.medium: all cited evidence is compatible. Result: severity low, basis confidence medium. This rates the category and evidence provenance only; it does not verify the finding.",
+   "risk_assessment_id": "acd4e6d5-f0b5-5f68-acd2-088eaf8b0f7f",
+   "rule_ids": [
+    "evidence.verified",
+    "category.unexpected_listener",
+    "compat.all",
+    "ceiling.read_only",
+    "confidence.medium"
+   ],
+   "scoring_method": "chanakya-risk-rules/1.0.0",
+   "severity": "low"
+  },
+  {
+   "assessed_at": "2026-01-01T00:00:00Z",
+   "assessed_by": "risk_engine",
+   "confidence": "medium",
+   "contract_version": "1.0.0",
+   "evidence_refs": [
+    "ev-llp"
+   ],
+   "finding_refs": [
+    "f-svc"
+   ],
+   "investigation_id": "inv-golden",
+   "rationale": "Rule set chanakya-risk-rules/1.0.0. evidence.verified: 1 cited evidence record(s) verified in this investigation. category.service_inventory: category service_inventory has base severity informational. compat.all: compatible evidence capabilities: list_listening_ports; incompatible: none. ceiling.read_only: all cited evidence is read_only, so severity is at most high. confidence.medium: all cited evidence is compatible. Result: severity informational, basis confidence medium. This rates the category and evidence provenance only; it does not verify the finding.",
+   "risk_assessment_id": "6aeb996e-3307-5a97-aed0-aa727112ce70",
+   "rule_ids": [
+    "evidence.verified",
+    "category.service_inventory",
+    "compat.all",
+    "ceiling.read_only",
+    "confidence.medium"
+   ],
+   "scoring_method": "chanakya-risk-rules/1.0.0",
+   "severity": "informational"
+  },
+  {
+   "assessed_at": "2026-01-01T00:00:00Z",
+   "assessed_by": "risk_engine",
+   "confidence": "medium",
+   "contract_version": "1.0.0",
+   "evidence_refs": [
+    "ev-env"
+   ],
+   "finding_refs": [
+    "f-plat"
+   ],
+   "investigation_id": "inv-golden",
+   "rationale": "Rule set chanakya-risk-rules/1.0.0. evidence.verified: 1 cited evidence record(s) verified in this investigation. category.platform_configuration: category platform_configuration has base severity low. compat.all: compatible evidence capabilities: observe_local_host_environment; incompatible: none. ceiling.read_only: all cited evidence is read_only, so severity is at most high. confidence.medium: all cited evidence is compatible. Result: severity low, basis confidence medium. This rates the category and evidence provenance only; it does not verify the finding.",
+   "risk_assessment_id": "c687ed03-1490-51d7-95c8-3f3f082f9203",
+   "rule_ids": [
+    "evidence.verified",
+    "category.platform_configuration",
+    "compat.all",
+    "ceiling.read_only",
+    "confidence.medium"
+   ],
+   "scoring_method": "chanakya-risk-rules/1.0.0",
+   "severity": "low"
+  },
+  {
+   "assessed_at": "2026-01-01T00:00:00Z",
+   "assessed_by": "risk_engine",
+   "confidence": "low",
+   "contract_version": "1.0.0",
+   "evidence_refs": [
+    "ev-env",
+    "ev-llp"
+   ],
+   "finding_refs": [
+    "f-unsup"
+   ],
+   "investigation_id": "inv-golden",
+   "rationale": "Rule set chanakya-risk-rules/1.0.0. evidence.verified: 2 cited evidence record(s) verified in this investigation. category.unsupported_platform_version: category unsupported_platform_version has base severity medium. compat.partial: compatible evidence capabilities: observe_local_host_environment; incompatible: list_listening_ports. ceiling.read_only: all cited evidence is read_only, so severity is at most high. confidence.low: only some cited evidence is compatible. Result: severity medium, basis confidence low. This rates the category and evidence provenance only; it does not verify the finding.",
+   "risk_assessment_id": "4ae2c52c-51c2-5f37-bcde-2f2142210cbc",
+   "rule_ids": [
+    "evidence.verified",
+    "category.unsupported_platform_version",
+    "compat.partial",
+    "ceiling.read_only",
+    "confidence.low"
+   ],
+   "scoring_method": "chanakya-risk-rules/1.0.0",
+   "severity": "medium"
+  },
+  {
+   "assessed_at": "2026-01-01T00:00:00Z",
+   "assessed_by": "risk_engine",
+   "confidence": "high",
+   "contract_version": "1.0.0",
+   "evidence_refs": [
+    "ev-llp",
+    "ev-env"
+   ],
+   "finding_refs": [
+    "f-obs-high"
+   ],
+   "investigation_id": "inv-golden",
+   "rationale": "Rule set chanakya-risk-rules/1.0.0. evidence.verified: 2 cited evidence record(s) verified in this investigation. category.observation: category observation has base severity informational. compat.all: compatible evidence capabilities: list_listening_ports, observe_local_host_environment; incompatible: none. ceiling.read_only: all cited evidence is read_only, so severity is at most high. confidence.high: all cited evidence is compatible and comes from at least two distinct capabilities. Result: severity informational, basis confidence high. This rates the category and evidence provenance only; it does not verify the finding.",
+   "risk_assessment_id": "699ccd77-a4f4-53d3-a4e5-8fb19643e08e",
+   "rule_ids": [
+    "evidence.verified",
+    "category.observation",
+    "compat.all",
+    "ceiling.read_only",
+    "confidence.high"
+   ],
+   "scoring_method": "chanakya-risk-rules/1.0.0",
+   "severity": "informational"
+  },
+  {
+   "assessed_at": "2026-01-01T00:00:00Z",
+   "assessed_by": "risk_engine",
+   "confidence": "medium",
+   "contract_version": "1.0.0",
+   "evidence_refs": [
+    "ev-other"
+   ],
+   "finding_refs": [
+    "f-obs-other"
+   ],
+   "investigation_id": "inv-golden",
+   "rationale": "Rule set chanakya-risk-rules/1.0.0. evidence.verified: 1 cited evidence record(s) verified in this investigation. category.observation: category observation has base severity informational. compat.all: compatible evidence capabilities: some_future_capability; incompatible: none. ceiling.read_only: all cited evidence is read_only, so severity is at most high. confidence.medium: all cited evidence is compatible. Result: severity informational, basis confidence medium. This rates the category and evidence provenance only; it does not verify the finding.",
+   "risk_assessment_id": "50cbff7c-56e1-5233-a324-ad8f0d4bee61",
+   "rule_ids": [
+    "evidence.verified",
+    "category.observation",
+    "compat.all",
+    "ceiling.read_only",
+    "confidence.medium"
+   ],
+   "scoring_method": "chanakya-risk-rules/1.0.0",
+   "severity": "informational"
+  }
+ ],
+ "not_assessed": [
+  [
+   "f-unrated",
+   "category_unrated"
+  ],
+  [
+   "f-none",
+   "category_unrated"
+  ],
+  [
+   "f-incompat",
+   "evidence_incompatible"
+  ]
+ ],
+ "provider_enum": [
+  "network_exposure",
+  "unexpected_listener",
+  "service_inventory",
+  "platform_configuration",
+  "unsupported_platform_version",
+  "observation"
+ ]
+}

@@ -303,12 +303,15 @@ def test_assessment_is_frozen():
 
 
 def test_not_assessed_and_result_validation():
-    assert NotAssessedFinding("f", "category_unrated").reason == "category_unrated"
-    for bad in [("", "category_unrated"), ("f", "safe"), ("f", None)]:
+    v1 = RISK_RULE_SET_V1
+    assert NotAssessedFinding("f", "category_unrated", v1).reason == "category_unrated"
+    for bad in [("", "category_unrated", v1), ("f", "safe", v1), ("f", None, v1), ("f", "category_unrated", "risk_v999"),
+                ("f", "category_unrated", None)]:
         with pytest.raises(RiskAssessmentValidationError):
             NotAssessedFinding(*bad)
-    RiskEngineResult(assessments=(make_ra(),), not_assessed=())
-    for bad in [([make_ra()], ()), ((make_ra().to_dict(),), ()), ((), ["x"])]:
+    RiskEngineResult(assessments=(make_ra(),), not_assessed=(), scoring_method=v1)
+    for bad in [([make_ra()], (), v1), ((make_ra().to_dict(),), (), v1), ((), ["x"], v1), ((), (), "risk_v999"),
+                ((), (), None)]:
         with pytest.raises(RiskAssessmentValidationError):
             RiskEngineResult(*bad)
 

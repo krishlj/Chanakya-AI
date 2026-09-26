@@ -1160,7 +1160,30 @@ and a new record behind TB-8, not a new trust boundary.
   - `scoring_method` is versioned, and only a closed set of supported
     rule sets is accepted, on write and on read;
   - tests pin the exact table and rule-id vocabulary;
-  - verification flags recomputation mismatches.
+  - verification flags recomputation mismatches;
+  - Phase 13: rule sets are versioned `RiskRuleSet`s in an immutable,
+    code-defined registry; v1 is frozen (golden test); every result
+    records its rule set; history is recomputed under the recorded rule
+    set.
+- **T-56 candidate — Rule-set version confusion or downgrade** (Phase 13).
+  A result is produced, validated or recomputed under a rule set other
+  than the one it records. Examples: an assessor using an older or other
+  set, review substituting the active set, an unknown set defaulting to
+  v1, or the model, a tool, a finding, evidence, the CLI or the
+  environment choosing a set.
+  *Controls:*
+  - required `scoring_method` on every result, with no mixed batches;
+  - exactly one active rule set, supplied by code and verified as
+    registered at construction;
+  - Runtime rejection of any other rule set, with no downgrade;
+  - `resolve_rule_set` with no fallback;
+  - recomputation through `for_scoring_method` under the recorded set;
+  - provider vocabulary derived from the active set;
+  - static tests that rule sets are not read from files, environment or
+    dynamic imports.
+
+  *Residual:* the registry is only as trustworthy as the code that
+  defines it.
 - **T-50 candidate — False assurance from low or absent ratings** (a T-07
   variant; Abuse Case 1 applied to risk). Injection steers the model to
   omit a category or pick a benign one, and the operator reads

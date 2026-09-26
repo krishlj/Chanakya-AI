@@ -9,6 +9,7 @@ import json
 import pytest
 
 from chanakya.contracts.enums import RiskCategory
+from chanakya.contracts.risk_taxonomy import RISK_RULE_SET_V1_DEFINITION
 from chanakya.evidence import EvidenceStore
 from chanakya.evidence.hashing import compute_content_hash
 from chanakya.findings import FindingStore
@@ -30,7 +31,7 @@ class World:
         self.evidence = EvidenceStore(root / "evidence")
         self.findings = FindingStore(root / "findings")
         self.risk = RiskAssessmentStore(root / "risk")
-        self.engine = RiskEngine(StoreEvidenceFactsReader(self.evidence))
+        self.engine = RiskEngine(StoreEvidenceFactsReader(self.evidence), rule_set=RISK_RULE_SET_V1_DEFINITION)
 
     def record(self, findings):
         for f in findings:

@@ -38,9 +38,10 @@ from chanakya.contracts.risk_assessment import (
     RiskEngineResult,
     derive_risk_assessment_id,
 )
+from chanakya.contracts.risk_taxonomy import RiskRuleSet, RiskRuleSetError, resolve_rule_set
 from chanakya.evidence.store import EvidenceStore, EvidenceStoreError
 
-from .rules import CAPABILITY_ID_PATTERN, SCORING_METHOD, EvidenceFacts, RuleOutcome, evaluate
+from .rules import CAPABILITY_ID_PATTERN, EvidenceFacts, RuleOutcome, evaluate
 
 _CONTRACT_VERSION = "1.0.0"
 
@@ -80,10 +81,41 @@ class StoreEvidenceFactsReader:
 
 
 class RiskEngine:
-    scoring_method = SCORING_METHOD
+    """Phase 13: an engine is bound to exactly one registered rule set,
+    supplied by trusted composition code. It never picks a rule set from a
+    finding, evidence, the model or any other input, and there is no
+    default: ``rule_set`` is required."""
 
-    def __init__(self, evidence_reader: EvidenceFactsReader) -> None:
+    def __init__(self, evidence_reader: EvidenceFactsReader, *, rule_set: RiskRuleSet) -> None:
+        if not isinstance(rule_set, RiskRuleSet):
+            raise RiskEngineError("RiskEngine requires a RiskRuleSet")
+        try:
+            registered = resolve_rule_set(rule_set.scoring_method)
+        except RiskRuleSetError:
+            raise RiskEngineError("RiskEngine rule set is not registered") from None
+        if registered != rule_set:
+            raise RiskEngineError("RiskEngine rule set differs from its registered definition")
         self._reader = evidence_reader
+        self._rule_set = registered
+
+    @property
+    def rule_set(self) -> RiskRuleSet:
+        return self._rule_set
+
+    @property
+    def scoring_method(self) -> str:
+        return self._rule_set.scoring_method
+
+    def for_scoring_method(self, scoring_method: str) -> "RiskEngine":
+        """An engine over the same Evidence reader, bound to the registered
+        rule set named ``scoring_method``: how historical assessments are
+        recomputed under the rule set they record. Unknown names raise;
+        there is no fallback to the active rule set."""
+        try:
+            rule_set = resolve_rule_set(scoring_method)
+        except RiskRuleSetError:
+            raise RiskEngineError("unknown risk rule set") from None
+        return RiskEngine(self._reader, rule_set=rule_set)
 
     def assess(self, investigation_id: str, findings: Sequence[Any], *, assessed_at: str) -> RiskEngineResult:
         if type(investigation_id) is not str or not investigation_id:
@@ -104,12 +136,16 @@ class RiskEngine:
         assessments: List[RiskAssessment] = []
         not_assessed: List[NotAssessedFinding] = []
         for finding_id, category, refs in inputs:
-            outcome = evaluate(category, [facts[ref] for ref in refs])
+            outcome = evaluate(category, [facts[ref] for ref in refs], rule_set=self._rule_set)
             if isinstance(outcome, RuleOutcome):
                 assessments.append(self._assessment(investigation_id, finding_id, refs, outcome, assessed_at))
             else:
-                not_assessed.append(NotAssessedFinding(finding_id=finding_id, reason=outcome))
-        return RiskEngineResult(assessments=tuple(assessments), not_assessed=tuple(not_assessed))
+                not_assessed.append(
+                    NotAssessedFinding(finding_id=finding_id, reason=outcome, scoring_method=self.scoring_method)
+                )
+        return RiskEngineResult(
+            assessments=tuple(assessments), not_assessed=tuple(not_assessed), scoring_method=self.scoring_method
+        )
 
     @staticmethod
     def _finding_inputs(investigation_id: str, finding: Any):

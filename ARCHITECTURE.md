@@ -281,6 +281,25 @@ suggested severity as one input but is not required to accept it verbatim.
 See `docs/CONTRACTS.md` §9 and `docs/AGENT-RUNTIME.md` "Deterministic risk
 assessment (Phase 10)".
 
+**Status (Phase 13):** rule sets are versioned.
+
+- **One production rule set.** A rule set is trusted, code-defined
+  infrastructure identified by its `scoring_method`.
+  `chanakya-risk-rules/1.0.0` (v1) is the only production rule set, and
+  its meaning is frozen. No v2 content exists.
+- **One active rule set.** The Runtime has exactly one active rule set,
+  chosen by the composition root from code. It is never taken from the
+  model, a tool, a finding, evidence, the investigation request, the CLI,
+  the environment or a configuration file.
+- **Provenance everywhere.** Every risk result, assessed or not assessed,
+  records its `scoring_method`. The Runtime rejects results produced under
+  any other rule set, and never downgrades.
+- **History.** Review recomputes each stored assessment under the rule set
+  it records. An unknown rule set fails closed, with no fallback. A future
+  rule set must add new artifacts rather than reinterpret v1 history.
+- **Provider vocabulary.** The model-facing category vocabulary is derived
+  from the active rule set.
+
 ## 12. AI Analysis Layer
 
 The Agent's evidence-correlation function: reads accumulated `Evidence`

@@ -54,7 +54,7 @@ from chanakya.contracts.risk_assessment import (
     derive_risk_assessment_id,
     severity_rank,
 )
-from chanakya.contracts.risk_taxonomy import READ_ONLY_SEVERITY_CEILING, RISK_TAXONOMY_V1
+from chanakya.contracts.risk_taxonomy import RiskRuleSet, RiskRuleSetError, resolve_rule_set
 from chanakya.contracts.tool_request import MalformedRequestError, ToolRequest
 from chanakya.contracts.tool_result import ToolResult, ToolResultStatus
 from chanakya.policy.gateway import EvaluationContext
@@ -222,6 +222,7 @@ def _validate_risk_result(
     context: InvestigationContext,
     findings: Tuple[Finding, ...],
     result: Any,
+    rule_set: RiskRuleSet,
 ) -> Tuple[RiskAssessment, ...]:
     """Phase 10. Checks a Risk Engine result against the Findings stored in
     this conclude turn before anything is stored. Raises
@@ -229,16 +230,28 @@ def _validate_risk_result(
 
     Every assessment is rebuilt from its dict, so an object altered after
     construction is re-validated against the contract (rule-set shape,
-    deterministic id, severity ceiling)."""
+    deterministic id, severity ceiling).
+
+    Phase 13 (RV-INV-4/6): the batch, every assessment and every
+    not-assessed entry must name exactly the Runtime's one active rule set.
+    A result produced under any other rule set, older or newer, is rejected;
+    nothing is ever re-labelled or downgraded."""
     if not isinstance(result, RiskEngineResult):
         raise RiskAssessmentValidationError("risk assessor returned an unexpected type")
     try:
         assessments = tuple(RiskAssessment.from_dict(ra.to_dict()) for ra in result.assessments)
-        not_assessed = tuple(NotAssessedFinding(n.finding_id, n.reason) for n in result.not_assessed)
+        not_assessed = tuple(
+            NotAssessedFinding(n.finding_id, n.reason, n.scoring_method) for n in result.not_assessed
+        )
+        methods = {result.scoring_method} | {a.scoring_method for a in assessments} | {
+            n.scoring_method for n in not_assessed
+        }
     except RiskAssessmentValidationError:
         raise
     except Exception:
         raise RiskAssessmentValidationError("risk assessor returned a malformed assessment") from None
+    if methods != {rule_set.scoring_method}:
+        raise RiskAssessmentValidationError("risk result was not produced under the active rule set")
     if len(assessments) + len(not_assessed) > MAX_RISK_ASSESSMENTS_PER_INVESTIGATION:
         raise RiskAssessmentValidationError("risk assessor returned too many results")
     by_id = {finding.finding_id: finding for finding in findings}
@@ -258,10 +271,10 @@ def _validate_risk_result(
             raise RiskAssessmentValidationError("risk assessment id is not the deterministic id")
         if ra.rule_ids[1] != f"category.{finding.category}":
             raise RiskAssessmentValidationError("risk assessment does not rate its finding's category")
-        if severity_rank(ra.severity.value) > severity_rank(READ_ONLY_SEVERITY_CEILING):
+        if severity_rank(ra.severity.value) > severity_rank(rule_set.max_severity):
             raise RiskAssessmentValidationError("risk assessment severity exceeds the rule-set ceiling")
     for item in not_assessed:
-        rated = by_id[item.finding_id].category in RISK_TAXONOMY_V1
+        rated = by_id[item.finding_id].category in rule_set.taxonomy
         if (item.reason == NOT_ASSESSED_CATEGORY_UNRATED) == rated:
             raise RiskAssessmentValidationError("not-assessed reason does not match the finding's category")
     return assessments
@@ -328,6 +341,7 @@ class AgentLoopController:
         finding_recorder: Optional[FindingRecorder] = None,
         risk_assessor: Optional[RiskAssessor] = None,
         risk_recorder: Optional[RiskAssessmentRecorder] = None,
+        risk_rule_set: Optional[RiskRuleSet] = None,
         clock=utcnow_iso,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
@@ -358,8 +372,21 @@ class AgentLoopController:
         # nothing to rate, is a composition error.
         if (risk_assessor is None) != (risk_recorder is None):
             raise ValueError("risk_assessor and risk_recorder must be configured together")
+        # Phase 13: exactly one active rule set, supplied by trusted
+        # composition code and required when risk assessment is configured.
+        # It must be the registered definition; nothing defaults to v1.
+        if risk_assessor is not None or risk_rule_set is not None:
+            if risk_assessor is None or not isinstance(risk_rule_set, RiskRuleSet):
+                raise ValueError("risk assessment requires exactly one active RiskRuleSet")
+            try:
+                registered = resolve_rule_set(risk_rule_set.scoring_method)
+            except RiskRuleSetError:
+                raise ValueError("the active risk rule set is not registered") from None
+            if registered != risk_rule_set:
+                raise ValueError("the active risk rule set differs from its registered definition")
         self._risk_assessor = risk_assessor
         self._risk_recorder = risk_recorder
+        self._risk_rule_set = risk_rule_set
         self._clock = clock
         self._sleep = sleep
 
@@ -656,7 +683,7 @@ class AgentLoopController:
         the Policy Gateway, approval or dispatch."""
         try:
             result = self._risk_assessor.assess(investigation_id, findings, assessed_at=self._clock())
-            assessments = _validate_risk_result(investigation_id, context, findings, result)
+            assessments = _validate_risk_result(investigation_id, context, findings, result, self._risk_rule_set)
         except Exception as exc:
             return self._halt_risk_assessment(investigation_id, exc)
         for risk_assessment in assessments:

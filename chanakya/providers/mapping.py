@@ -45,6 +45,7 @@ Security-relevant properties this module is responsible for (see
 """
 from __future__ import annotations
 
+import copy
 import json
 import uuid
 from typing import Any, Mapping, MutableMapping, Optional
@@ -56,7 +57,7 @@ from chanakya.capability.reserved import (
     is_reserved_capability_name,
 )
 from chanakya.contracts.enums import SUPPORTED_CONTRACT_VERSIONS
-from chanakya.contracts.risk_taxonomy import RISK_CATEGORY_IDS
+from chanakya.contracts import risk_taxonomy
 from chanakya.runtime.clock import utcnow_iso
 from chanakya.runtime.context_assembler import AssembledContext
 from chanakya.targets.context import TargetContextView
@@ -134,6 +135,17 @@ _FINDING_CATEGORY_DESCRIPTION = (
     "recorded but not risk-assessed. You do not rate severity or risk."
 )
 
+def _finding_tool_schema() -> Mapping[str, Any]:
+    """Phase 13: the finding channel schema with its ``category`` enum taken,
+    at request time, from the one active risk rule set, so the model-facing
+    vocabulary cannot drift from the rules that rate it. A fresh copy is
+    returned; the template is never mutated."""
+    schema = copy.deepcopy(_FINDING_TOOL_SCHEMA)
+    category = schema["properties"]["findings"]["items"]["properties"]["category"]
+    category["enum"] = list(risk_taxonomy.active_rule_set().category_ids)
+    return schema
+
+
 _FINDING_TOOL_SCHEMA = {
     "type": "object",
     "properties": {
@@ -148,7 +160,7 @@ _FINDING_TOOL_SCHEMA = {
                     "evidence_refs": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 20},
                     "category": {
                         "type": "string",
-                        "enum": list(RISK_CATEGORY_IDS),
+                        "enum": [],  # filled per request from the active rule set
                         "description": _FINDING_CATEGORY_DESCRIPTION,
                     },
                     "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
@@ -227,7 +239,7 @@ def build_request_kwargs(assembled_context: AssembledContext, config: ProviderCo
     tools = [_build_tool_param(entry) for entry in assembled_context.capability_catalog]
     if getattr(config, "findings_channel", False):
         tools.append(
-            {"name": RESERVED_FINDING_TOOL, "description": _FINDING_TOOL_DESCRIPTION, "input_schema": _FINDING_TOOL_SCHEMA}
+            {"name": RESERVED_FINDING_TOOL, "description": _FINDING_TOOL_DESCRIPTION, "input_schema": _finding_tool_schema()}
         )
     if tools:
         kwargs["tools"] = tools

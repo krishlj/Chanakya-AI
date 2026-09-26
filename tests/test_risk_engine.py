@@ -22,11 +22,19 @@ from chanakya.contracts.risk_assessment import (
 from chanakya.contracts.risk_taxonomy import RISK_RULE_SET_V1, RISK_TAXONOMY_V1
 from chanakya.evidence import EvidenceStore
 from chanakya.risk.engine import RiskEngine, RiskEngineError, StoreEvidenceFactsReader
-from chanakya.risk.rules import EvidenceFacts, evaluate
+from chanakya.contracts.risk_taxonomy import RISK_RULE_SET_V1_DEFINITION, RiskCategoryRule, RiskRuleSet
+from chanakya.risk import rules as _rules
+from chanakya.risk.rules import EvidenceFacts
 
 from risk_factories import HOSTILE_TEXT, make_finding, put_evidence
 
 INV = "inv-10"
+
+
+def evaluate(category, facts_):
+    """Phase 13: the v1 rule set, passed explicitly."""
+    return _rules.evaluate(category, facts_, rule_set=RISK_RULE_SET_V1_DEFINITION)
+
 LLP = "list_listening_ports"
 ENV = "observe_local_host_environment"
 AT = "2026-09-26T00:00:00.000000Z"
@@ -39,7 +47,7 @@ def store(tmp_path):
 
 @pytest.fixture
 def engine(store):
-    return RiskEngine(StoreEvidenceFactsReader(store))
+    return RiskEngine(StoreEvidenceFactsReader(store), rule_set=RISK_RULE_SET_V1_DEFINITION)
 
 
 def assess_one(engine, finding, at=AT):
@@ -61,7 +69,7 @@ def facts(capability, classification=Classification.READ_ONLY):
 def test_rule1_unrated_category_is_not_assessed(engine, store, category):
     ev = put_evidence(store, INV, LLP)
     outcome = assess_one(engine, make_finding(category=category, evidence_refs=(ev,)))
-    assert outcome == NotAssessedFinding(outcome.finding_id, "category_unrated")
+    assert outcome == NotAssessedFinding(outcome.finding_id, "category_unrated", RISK_RULE_SET_V1_DEFINITION.scoring_method)
 
 
 @pytest.mark.parametrize("category", ["NETWORK_EXPOSURE", " network_exposure", "category.network_exposure", 7, ["x"]])
@@ -104,14 +112,16 @@ def test_rule5_read_only_ceiling_is_cited_and_critical_unreachable(engine, store
     assert "ceiling.read_only" in ra.rule_ids and ra.severity != RiskCategory.CRITICAL
 
 
-def test_rule5_ceiling_caps_a_severity_above_high(monkeypatch):
+def test_rule5_ceiling_caps_a_severity_above_high():
     # Rule-level check with a hypothetical critical base: the cap applies.
-    import chanakya.risk.rules as rules_module
-    from chanakya.contracts.risk_taxonomy import RiskCategoryRule
-
-    patched = dict(RISK_TAXONOMY_V1, network_exposure=RiskCategoryRule("network_exposure", "critical", frozenset({LLP})))
-    monkeypatch.setattr(rules_module, "RISK_TAXONOMY_V1", patched)
-    outcome = rules_module.evaluate("network_exposure", [facts(LLP)])
+    # Phase 13: expressed as an unregistered, test-only RiskRuleSet passed to
+    # the pure rule function (the engine would refuse it: not registered).
+    taxonomy = dict(RISK_TAXONOMY_V1, network_exposure=RiskCategoryRule("network_exposure", "critical", frozenset({LLP})))
+    hypothetical = RiskRuleSet(
+        scoring_method="test-only/ceiling", taxonomy=taxonomy, rule_ids=RISK_RULE_SET_V1_DEFINITION.rule_ids,
+        read_only_severity_ceiling="high", max_severity="critical",
+    )
+    outcome = _rules.evaluate("network_exposure", [facts(LLP)], rule_set=hypothetical)
     assert outcome.severity == RiskCategory.HIGH
 
 
@@ -273,7 +283,7 @@ class LyingReader:
     ids=["wrong_type", "wrong_id", "foreign", "credential_capability", "text_capability"],
 )
 def test_reader_output_is_checked(fact):
-    engine = RiskEngine(LyingReader(fact))
+    engine = RiskEngine(LyingReader(fact), rule_set=RISK_RULE_SET_V1_DEFINITION)
     with pytest.raises(RiskEngineError):
         engine.assess(INV, [make_finding(evidence_refs=("ev-1",))], assessed_at=AT)
 
@@ -284,7 +294,7 @@ def test_reader_exceptions_become_engine_errors():
             raise OSError("disk")
 
     with pytest.raises(RiskEngineError):
-        RiskEngine(Boom()).assess(INV, [make_finding()], assessed_at=AT)
+        RiskEngine(Boom(), rule_set=RISK_RULE_SET_V1_DEFINITION).assess(INV, [make_finding()], assessed_at=AT)
 
 
 def test_store_reader_never_returns_payload_content(store):
@@ -312,7 +322,7 @@ def test_same_inputs_give_identical_assessments_with_different_clocks(engine, st
 def test_fresh_engine_and_reader_reproduce_the_assessment(engine, store):
     ev = put_evidence(store, INV, LLP)
     finding = make_finding(evidence_refs=(ev,))
-    other = RiskEngine(StoreEvidenceFactsReader(EvidenceStore(store.root)))
+    other = RiskEngine(StoreEvidenceFactsReader(EvidenceStore(store.root)), rule_set=RISK_RULE_SET_V1_DEFINITION)
     assert assess_one(engine, finding) == assess_one(other, finding)
 
 

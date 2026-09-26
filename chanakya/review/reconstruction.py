@@ -70,6 +70,7 @@ class _Builder:
         self.evidence_events: Dict[str, str] = {}
         self.finding_events: Dict[str, Any] = {}
         self.risk_events: Dict[str, Optional[str]] = {}
+        self.risk_methods: Dict[str, Optional[str]] = {}
         self.terminal: Optional[ReviewStatus] = None
         self.terminal_reason: Optional[str] = None
 
@@ -274,6 +275,8 @@ class _Builder:
         raid = ids.get("risk_assessment_id")
         if isinstance(raid, str):
             self.risk_events[raid] = ids.get("finding_id")
+            method = details.get("scoring_method") if isinstance(details, dict) else None
+            self.risk_methods[raid] = method if isinstance(method, str) else None
 
     def _on_investigation_completed(self, index, ids, details) -> None:
         self._set_terminal(ReviewStatus.COMPLETED, None)
@@ -467,7 +470,7 @@ def _check_risk(builder: _Builder, risk_store: Any, risk_engine: Any, stored_fin
             builder.flag("risk_evidence_mismatch", raid)
         if raid not in builder.risk_events:
             builder.flag("orphan_risk_assessment", raid)
-        elif builder.risk_events[raid] != fid:
+        elif builder.risk_events[raid] != fid or builder.risk_methods.get(raid) != assessment.scoring_method:
             builder.flag("risk_audit_mismatch", raid)
     stored_ids = {a.risk_assessment_id for a in stored}
     for raid in builder.risk_events:
@@ -485,22 +488,65 @@ def _check_risk(builder: _Builder, risk_store: Any, risk_engine: Any, stored_fin
 
 
 def _recompute_risk(builder: _Builder, risk_engine: Any, stored_findings, stored) -> None:
+    """Phase 13 (RV-INV-2): each stored assessment is recomputed under the
+    rule set it records, resolved through the trusted registry by
+    ``risk_engine.for_scoring_method``. The active rule set is never
+    substituted, and an unknown rule set is an anomaly, never a fallback.
+
+    Coverage (a rateable finding with no stored assessment) is checked only
+    under the rule set this investigation's own records name. With none
+    recorded, the rule set cannot be known from durable history, so no
+    coverage claim is made."""
+    findings_by_id = {f.finding_id: f for f in stored_findings}
+    by_method: Dict[str, list] = {}
+    for assessment in stored:
+        by_method.setdefault(assessment.scoring_method, []).append(assessment)
+    for method, assessments in by_method.items():
+        engine = _engine_for(builder, risk_engine, method, [a.risk_assessment_id for a in assessments])
+        if engine is None:
+            continue
+        subset = tuple(findings_by_id[a.finding_id] for a in assessments if a.finding_id in findings_by_id)
+        try:
+            result = engine.assess(builder.investigation_id, subset, assessed_at=_REVIEW_ASSESSED_AT)
+        except Exception:  # an engine or evidence integrity failure is reported, never raised
+            builder.flag("risk_recomputation_failed")
+            continue
+        expected = {a.finding_id: a for a in result.assessments}
+        for assessment in assessments:
+            exp = expected.get(assessment.finding_id)
+            if exp is None:
+                builder.flag("risk_unexpected_assessment", assessment.risk_assessment_id)
+            elif any(getattr(assessment, name) != getattr(exp, name) for name in _RISK_COMPARED):
+                builder.flag("risk_recomputation_mismatch", assessment.risk_assessment_id)
+
+    recorded = set(by_method) | {m for m in builder.risk_methods.values() if m is not None}
+    if len(recorded) > 1:
+        builder.flag("risk_mixed_scoring_methods")
+        return
+    if not recorded:
+        return
+    (method,) = recorded
+    engine = _engine_for(builder, risk_engine, method, [])
+    if engine is None:
+        return
     try:
-        result = risk_engine.assess(builder.investigation_id, tuple(stored_findings), assessed_at=_REVIEW_ASSESSED_AT)
-    except Exception:  # an engine or evidence integrity failure is reported, never raised
+        result = engine.assess(builder.investigation_id, tuple(stored_findings), assessed_at=_REVIEW_ASSESSED_AT)
+    except Exception:
         builder.flag("risk_recomputation_failed")
         return
-    expected = {a.finding_id: a for a in result.assessments}
-    stored_by_finding = {a.finding_id: a for a in stored}
-    for fid, assessment in stored_by_finding.items():
-        exp = expected.get(fid)
-        if exp is None:
-            builder.flag("risk_unexpected_assessment", assessment.risk_assessment_id)
-        elif any(getattr(assessment, name) != getattr(exp, name) for name in _RISK_COMPARED):
-            builder.flag("risk_recomputation_mismatch", assessment.risk_assessment_id)
-    for fid in expected:
-        if fid not in stored_by_finding:
-            builder.flag("risk_assessment_not_recorded", fid)
+    stored_findings_ids = {a.finding_id for a in stored}
+    for assessment in result.assessments:
+        if assessment.finding_id not in stored_findings_ids:
+            builder.flag("risk_assessment_not_recorded", assessment.finding_id)
+
+
+def _engine_for(builder: _Builder, risk_engine: Any, method: str, subjects):
+    try:
+        return risk_engine.for_scoring_method(method)
+    except Exception:  # unknown or unavailable rule set: fail closed, never substitute
+        for subject in subjects or [None]:
+            builder.flag("risk_unknown_scoring_method", subject)
+        return None
 
 
 __all__ = ["reconstruct_investigation"]

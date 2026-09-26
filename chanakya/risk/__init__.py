@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from .engine import EvidenceFactsReader, RiskEngine, RiskEngineError, StoreEvidenceFactsReader
 from .provenance import RiskProvenanceReport, verify_risk_provenance
-from .rules import SCORING_METHOD, EvidenceFacts
+from .rules import EvidenceFacts
 from .store import (
     MAX_RECORD_BYTES,
     CorruptRiskAssessmentError,
@@ -24,7 +24,6 @@ from .store import (
 
 __all__ = [
     "MAX_RECORD_BYTES",
-    "SCORING_METHOD",
     "CorruptRiskAssessmentError",
     "EvidenceFacts",
     "EvidenceFactsReader",

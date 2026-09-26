@@ -18,6 +18,7 @@ from chanakya.contracts.audit_event import AuditEventType
 from chanakya.contracts.enums import RiskCategory
 from chanakya.contracts.investigation_context import InvestigationStatus
 from chanakya.contracts.risk_assessment import NotAssessedFinding, RiskEngineResult
+from chanakya.contracts.risk_taxonomy import RISK_RULE_SET_V1_DEFINITION
 from chanakya.evidence import EvidenceStore
 from chanakya.findings import FindingStore
 from chanakya.risk import RiskAssessmentStore, RiskEngine, StoreEvidenceFactsReader
@@ -51,7 +52,7 @@ def rig(investigation_manager_factory, resource_governor, gateway, investigation
     r.evidence = EvidenceStore(tmp_path / "evidence")
     r.findings = FindingStore(tmp_path / "findings")
     r.risk = RiskAssessmentStore(tmp_path / "risk")
-    r.engine = RiskEngine(StoreEvidenceFactsReader(r.evidence))
+    r.engine = RiskEngine(StoreEvidenceFactsReader(r.evidence), rule_set=RISK_RULE_SET_V1_DEFINITION)
 
     def build(assessor="engine", recorder="store", sink=None):
         audit = AuditEmitter(sink) if sink is not None else r.audit
@@ -60,6 +61,7 @@ def rig(investigation_manager_factory, resource_governor, gateway, investigation
             evidence_recorder=FilesystemEvidenceRecorder(r.evidence), finding_recorder=r.findings,
             risk_assessor=r.engine if assessor == "engine" else assessor,
             risk_recorder=r.risk if recorder == "store" else recorder,
+            risk_rule_set=RISK_RULE_SET_V1_DEFINITION if assessor is not None else None,
             sleep=lambda _s: None,
         )
 
@@ -196,7 +198,8 @@ def forced(obj, **changes):
 
 def with_first(transform):
     return lambda res, _f: RiskEngineResult(
-        assessments=(transform(res.assessments[0]),) + res.assessments[1:], not_assessed=res.not_assessed)
+        assessments=(transform(res.assessments[0]),) + res.assessments[1:], not_assessed=res.not_assessed,
+        scoring_method=res.scoring_method)
 
 
 class Unvalidated:
@@ -223,14 +226,16 @@ CORRUPTIONS = {
         investigation_id="inv-foreign", finding_refs=ra.finding_refs, evidence_refs=ra.evidence_refs)),
     "fabricated_finding": lambda res, f: RiskEngineResult(
         assessments=res.assessments + (make_ra(investigation_id=f[0].investigation_id, finding_refs=("find-ghost",),
-                                               evidence_refs=f[0].evidence_refs),), not_assessed=()),
-    "missing_finding": lambda res, f: RiskEngineResult(assessments=res.assessments[1:], not_assessed=res.not_assessed),
-    "duplicate_assessment": lambda res, f: RiskEngineResult(assessments=res.assessments * 2, not_assessed=()),
+                                               evidence_refs=f[0].evidence_refs),), not_assessed=(), scoring_method=res.scoring_method),
+    "missing_finding": lambda res, f: RiskEngineResult(assessments=res.assessments[1:], not_assessed=res.not_assessed, scoring_method=res.scoring_method),
+    "duplicate_assessment": lambda res, f: RiskEngineResult(assessments=res.assessments * 2, not_assessed=(), scoring_method=res.scoring_method),
     "assessed_and_not_assessed": lambda res, f: RiskEngineResult(
-        assessments=res.assessments, not_assessed=(NotAssessedFinding(res.assessments[0].finding_id, "evidence_incompatible"),)),
+        assessments=res.assessments, not_assessed=(NotAssessedFinding(res.assessments[0].finding_id, "evidence_incompatible", res.scoring_method),),
+        scoring_method=res.scoring_method),
     "suppressed_as_unrated": lambda res, f: RiskEngineResult(
-        assessments=res.assessments[1:], not_assessed=(NotAssessedFinding(res.assessments[0].finding_id, "category_unrated"),)),
-    "excessive": lambda res, f: RiskEngineResult(assessments=res.assessments * 21, not_assessed=()),
+        assessments=res.assessments[1:], not_assessed=(NotAssessedFinding(res.assessments[0].finding_id, "category_unrated", res.scoring_method),),
+        scoring_method=res.scoring_method),
+    "excessive": lambda res, f: RiskEngineResult(assessments=res.assessments * 21, not_assessed=(), scoring_method=res.scoring_method),
     "wrong_type_dict": lambda res, f: {"assessments": [], "not_assessed": []},
     "none": lambda res, f: None,
     "duck_typed_dict_items": lambda res, f: Unvalidated([ra.to_dict() for ra in res.assessments]),

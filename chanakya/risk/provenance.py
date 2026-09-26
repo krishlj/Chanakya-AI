@@ -103,17 +103,37 @@ def verify_risk_provenance(
             problems.append("evidence_refs_mismatch")
         stored_by_finding[ra.finding_id] = ra
 
+    # Phase 13 (RV-INV-2): each stored assessment is recomputed under the rule
+    # set it records, never under whichever one is active. This verifier
+    # backs the current run's display, so a stored rule set other than the
+    # active one is also a problem (RV-INV-4); historical review is
+    # chanakya.review's job.
+    by_method: Dict[str, List[RiskAssessment]] = {}
+    for ra in stored_by_finding.values():
+        by_method.setdefault(ra.scoring_method, []).append(ra)
+        if ra.scoring_method != engine.scoring_method:
+            problems.append("scoring_method_not_active")
+    for method, assessments in by_method.items():
+        subset = [by_finding[ra.finding_id] for ra in assessments]
+        try:
+            recorded = engine.for_scoring_method(method).assess(investigation_id, subset, assessed_at=_RECOMPUTED_AT)
+        except Exception:
+            return _failed(investigation_id, *problems, "evidence_unverifiable")
+        expected = {a.finding_id: a for a in recorded.assessments}
+        for ra in assessments:
+            exp = expected.get(ra.finding_id)
+            if exp is None or any(getattr(ra, name) != getattr(exp, name) for name in _COMPARED_FIELDS):
+                problems.append("recomputation_mismatch")
+
+    # Coverage and not-assessed reasons for display: the active rule set.
     try:
         recomputed = engine.assess(investigation_id, findings, assessed_at=_RECOMPUTED_AT)
     except Exception:
         return _failed(investigation_id, *problems, "evidence_unverifiable")
 
     for expected in recomputed.assessments:
-        actual = stored_by_finding.get(expected.finding_id)
-        if actual is None:
+        if expected.finding_id not in stored_by_finding:
             problems.append("assessment_missing")
-        elif any(getattr(actual, name) != getattr(expected, name) for name in _COMPARED_FIELDS):
-            problems.append("recomputation_mismatch")
     for item in recomputed.not_assessed:
         if item.finding_id in stored_by_finding:
             problems.append("unexpected_assessment")

@@ -1,9 +1,12 @@
-"""Rule set ``chanakya-risk-rules/1.0.0`` — Phase 10 (docs/CONTRACTS.md §9).
+"""Risk rule evaluation — Phase 10 (docs/CONTRACTS.md §9), versioned in Phase 13.
 
 Pure evaluation of one Finding's category against the verified metadata of
-the Evidence it cites. The table itself (categories, base severities,
-compatible capabilities, rule ids) is data in
-``chanakya.contracts.risk_taxonomy``; this module applies it:
+the Evidence it cites, under an explicitly supplied ``RiskRuleSet`` (there is
+no default rule set). The rule-set data (categories, base severities,
+compatible capabilities, rule ids, ceilings) lives in
+``chanakya.contracts.risk_taxonomy``; ``chanakya-risk-rules/1.0.0`` is the
+only production rule set. This module applies whichever rule set it is
+given:
 
 1. Category gate: no category, or one outside the taxonomy, is not
    assessed (``category_unrated``). No default severity is ever guessed.
@@ -37,9 +40,6 @@ from chanakya.contracts.risk_assessment import (
 )
 from chanakya.contracts.risk_taxonomy import (
     ANY_CAPABILITY,
-    READ_ONLY_SEVERITY_CEILING,
-    RISK_RULE_SET_V1,
-    RISK_TAXONOMY_V1,
     RULE_CEILING_READ_ONLY,
     RULE_COMPAT_ALL,
     RULE_COMPAT_PARTIAL,
@@ -47,9 +47,8 @@ from chanakya.contracts.risk_taxonomy import (
     RULE_CONFIDENCE_LOW,
     RULE_CONFIDENCE_MEDIUM,
     RULE_EVIDENCE_VERIFIED,
+    RiskRuleSet,
 )
-
-SCORING_METHOD = RISK_RULE_SET_V1
 
 #: Registry capability ids that may appear in a rationale.
 CAPABILITY_ID_PATTERN = re.compile(r"^[a-z0-9_]{1,64}$")
@@ -78,9 +77,12 @@ def _names(capabilities) -> str:
     return ", ".join(sorted(capabilities)) or "none"
 
 
-def evaluate(category: Optional[str], facts: Sequence[EvidenceFacts]) -> Union[RuleOutcome, str]:
-    """Returns a ``RuleOutcome``, or a not-assessed reason string."""
-    rule = RISK_TAXONOMY_V1.get(category) if isinstance(category, str) else None
+def evaluate(category: Optional[str], facts: Sequence[EvidenceFacts], *, rule_set: RiskRuleSet) -> Union[RuleOutcome, str]:
+    """Returns a ``RuleOutcome``, or a not-assessed reason string, under
+    ``rule_set`` (Phase 13: always explicit; there is no default)."""
+    if not isinstance(rule_set, RiskRuleSet):
+        raise TypeError("evaluate requires a RiskRuleSet")
+    rule = rule_set.taxonomy.get(category) if isinstance(category, str) else None
     if rule is None:
         return NOT_ASSESSED_CATEGORY_UNRATED
 
@@ -99,8 +101,8 @@ def evaluate(category: Optional[str], facts: Sequence[EvidenceFacts]) -> Union[R
     ceiling = all(f.classification == Classification.READ_ONLY for f in facts)
     if ceiling:
         rules.append(RULE_CEILING_READ_ONLY)
-        if severity_rank(severity) > severity_rank(READ_ONLY_SEVERITY_CEILING):
-            severity = READ_ONLY_SEVERITY_CEILING
+        if severity_rank(severity) > severity_rank(rule_set.read_only_severity_ceiling):
+            severity = rule_set.read_only_severity_ceiling
 
     if all_compatible and len(supporting_capabilities) >= 2:
         confidence, confidence_rule, why = "high", RULE_CONFIDENCE_HIGH, "all cited evidence is compatible and comes from at least two distinct capabilities"
@@ -112,13 +114,16 @@ def evaluate(category: Optional[str], facts: Sequence[EvidenceFacts]) -> Union[R
 
     def rationale(compatible_text: str, other_text: str) -> str:
         parts = [
-            f"Rule set {SCORING_METHOD}.",
+            f"Rule set {rule_set.scoring_method}.",
             f"{RULE_EVIDENCE_VERIFIED}: {len(facts)} cited evidence record(s) verified in this investigation.",
             f"{rule.rule_id}: category {rule.category} has base severity {rule.base_severity}.",
             f"{rules[2]}: compatible evidence capabilities: {compatible_text}; incompatible: {other_text}.",
         ]
         if ceiling:
-            parts.append(f"{RULE_CEILING_READ_ONLY}: all cited evidence is read_only, so severity is at most {READ_ONLY_SEVERITY_CEILING}.")
+            parts.append(
+                f"{RULE_CEILING_READ_ONLY}: all cited evidence is read_only, so severity is at most "
+                f"{rule_set.read_only_severity_ceiling}."
+            )
         parts.append(f"{confidence_rule}: {why}.")
         parts.append(
             f"Result: severity {severity}, basis confidence {confidence}. "
@@ -135,4 +140,4 @@ def evaluate(category: Optional[str], facts: Sequence[EvidenceFacts]) -> Union[R
     return RuleOutcome(severity=RiskCategory(severity), confidence=confidence, rule_ids=tuple(rules), rationale=text)
 
 
-__all__ = ["CAPABILITY_ID_PATTERN", "SCORING_METHOD", "EvidenceFacts", "RuleOutcome", "evaluate"]
+__all__ = ["CAPABILITY_ID_PATTERN", "EvidenceFacts", "RuleOutcome", "evaluate"]
