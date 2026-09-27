@@ -26,6 +26,17 @@ What it checks:
 4. **Terminal state.** ``COMPLETED``/``HALTED``/``FAILED`` only when the
    matching terminal event is recorded; otherwise ``INCOMPLETE``. A missing
    terminal event is never reported as a completion.
+5. **Model influence (Phase 14, CT-INV-6).** For streams written under
+   AuditEvent contract 1.1.0, every model turn must be a manifest
+   (``agent_turn_requested``) followed by exactly one outcome
+   (``agent_turn_received``/``agent_turn_rejected``), with contiguous
+   sequences and deterministic ids. Review recomputes the instruction and
+   objective hashes from the recorded origin, checks the provider identity
+   and endpoint never change, resolves every context entry to a tool result
+   this investigation recorded *earlier* (and, for Evidence, re-hashes the
+   verified payload), and requires every proposed request, finding and
+   completion to follow an accepted turn that produced it. Turn records are
+   forensic; Review never treats them as authority.
 
 Anomalies are fixed codes plus, at most, an identifier.
 """
@@ -34,6 +45,16 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from chanakya.audit.log import CorruptAuditLogError, InvalidAuditIdentifierError
+from chanakya.contracts.agent_turn import (
+    INSTRUCTIONS_TEMPLATE_VERSION,
+    SOURCE_KIND_EVIDENCE,
+    derive_agent_turn_id,
+    hash_json_normalized,
+    hash_value,
+    provider_identity_from_details,
+    render_instructions,
+    validate_turn_details,
+)
 from chanakya.contracts.audit_details import validate_details
 from chanakya.evidence.store import EvidenceStoreError
 from chanakya.findings.store import FindingStoreError
@@ -50,6 +71,7 @@ from .models import (
     RequestRecord,
     ReviewStatus,
     RiskRecord,
+    TurnRecord,
 )
 
 _REVIEW_ASSESSED_AT = "review"
@@ -73,6 +95,16 @@ class _Builder:
         self.risk_methods: Dict[str, Optional[str]] = {}
         self.terminal: Optional[ReviewStatus] = None
         self.terminal_reason: Optional[str] = None
+        # Phase 14: model-turn replay state.
+        self.turn_era = False
+        self.turns: Dict[str, Dict[str, Any]] = {}
+        self.pending_turn: Optional[str] = None
+        self.last_turn_sequence = 0
+        self.turn_identity: Any = None
+        self.expect_capability: Optional[str] = None
+        self.expect_findings = 0
+        self.accepted_conclusion = False
+        self.context_evidence: List[Any] = []
 
     def flag(self, code: str, subject: Optional[str] = None) -> None:
         self.anomalies.append(Anomaly(code, subject if isinstance(subject, str) else None))
@@ -89,6 +121,9 @@ class _Builder:
                 self.flag("event_after_terminal", event.audit_event_id)
             if index == 0 and kind != "investigation_started":
                 self.flag("stream_missing_investigation_started")
+            if index == 0:
+                # Phase 14: turn records exist, and are required, from 1.1.0.
+                self.turn_era = event.contract_version != "1.0.0"
             handler = getattr(self, f"_on_{kind}", None)
             if handler is not None:
                 handler(index, ids, details)
@@ -114,6 +149,14 @@ class _Builder:
 
     def _on_request_proposed(self, index, ids, details) -> None:
         tid = ids.get("tool_request_id")
+        if self.turn_era:
+            capability = details.get("capability") if isinstance(details, dict) else None
+            if self.pending_turn is not None:
+                self.flag("turn_order_invalid", tid)
+            elif self.expect_capability is None:
+                self.flag("request_without_accepted_turn", tid)
+            elif capability != self.expect_capability:
+                self.flag("turn_request_mismatch", tid)
         if not self._details_ok("request_proposed", details, tid):
             return
         if tid in self.requests:
@@ -267,6 +310,11 @@ class _Builder:
 
     def _on_finding_created(self, index, ids, details) -> None:
         fid = ids.get("finding_id")
+        if self.turn_era:
+            if self.pending_turn is not None or not self.accepted_conclusion or self.expect_findings <= 0:
+                self.flag("finding_without_accepted_turn", fid)
+            else:
+                self.expect_findings -= 1
         if isinstance(fid, str):
             refs = details.get("evidence_refs") if isinstance(details, dict) else None
             self.finding_events[fid] = tuple(refs) if isinstance(refs, list) else None
@@ -279,7 +327,133 @@ class _Builder:
             self.risk_methods[raid] = method if isinstance(method, str) else None
 
     def _on_investigation_completed(self, index, ids, details) -> None:
+        if self.turn_era and (self.pending_turn is not None or not self.accepted_conclusion):
+            self.flag("completion_without_accepted_turn")
         self._set_terminal(ReviewStatus.COMPLETED, None)
+
+    # -- Phase 14: model turns ---------------------------------------------
+
+    def _turn_details_ok(self, kind: str, details: Any, subject: Optional[str]) -> bool:
+        if not self.turn_era:
+            self.flag("turn_event_unsupported_version", subject)
+            return False
+        problems = validate_turn_details(kind, details)
+        for code in problems:
+            self.flag(code, subject)
+        return not problems
+
+    def _on_agent_turn_requested(self, index, ids, details) -> None:
+        subject = ids.get("agent_turn_id")
+        if not self._turn_details_ok("agent_turn_requested", details, subject):
+            return
+        turn_id, sequence = details["turn_id"], details["turn_sequence"]
+        if subject != turn_id or derive_agent_turn_id(self.investigation_id, sequence) != turn_id:
+            self.flag("turn_id_mismatch", turn_id)
+        if self.pending_turn is not None:
+            self.flag("turn_outcome_missing", self.pending_turn)
+            self.pending_turn = None
+        if turn_id in self.turns or sequence <= self.last_turn_sequence:
+            self.flag("duplicate_turn_record", turn_id)
+            return
+        if sequence != self.last_turn_sequence + 1:
+            self.flag("turn_sequence_gap", turn_id)
+        self.last_turn_sequence = sequence
+        identity = provider_identity_from_details(details)
+        if self.turn_identity is None:
+            self.turn_identity = identity
+        else:
+            first = self.turn_identity
+            if identity.endpoint != first.endpoint:
+                self.flag("turn_endpoint_mismatch", turn_id)
+            if (identity.provider, identity.model, identity.config_version, identity.declared,
+                    identity.timeout_seconds, identity.max_tokens) != (
+                    first.provider, first.model, first.config_version, first.declared,
+                    first.timeout_seconds, first.max_tokens):
+                self.flag("turn_provider_mismatch", turn_id)
+        if details["template_version"] != INSTRUCTIONS_TEMPLATE_VERSION:
+            self.flag("turn_template_unknown", turn_id)
+        elif self.origin is not None:
+            instructions = render_instructions(self.origin.objective, self.investigation_id)
+            if hash_value(instructions) != details["instructions_hash"]:
+                self.flag("turn_instructions_mismatch", turn_id)
+            if hash_value(self.origin.objective) != details["objective_hash"]:
+                self.flag("turn_objective_mismatch", turn_id)
+        self._check_turn_context(turn_id, details["context_entries"])
+        self.turns[turn_id] = dict(
+            turn_id=turn_id, turn_sequence=sequence, provider=identity.provider, model=identity.model,
+            endpoint=identity.endpoint, config_version=identity.config_version, declared=identity.declared,
+            provider_request_hash=details["provider_request_hash"], instructions_hash=details["instructions_hash"],
+            context_sources=tuple(entry["source"] for entry in details["context_entries"]),
+            outcome=None, accepted=None, stop_reason=None, proposed_capability=None,
+            explanation_status=None, explanation=None, raw_output_hash=None,
+        )
+        self.pending_turn = turn_id
+        self.expect_capability, self.expect_findings, self.accepted_conclusion = None, 0, False
+
+    def _check_turn_context(self, turn_id: str, entries) -> None:
+        """Every entry must name a tool result this investigation recorded
+        before this turn, from the same step, with the same content."""
+        seen = set()
+        for entry in entries:
+            result_id = entry["tool_result_id"]
+            if result_id in seen:
+                self.flag("turn_context_duplicate_source", turn_id)
+            seen.add(result_id)
+            request = self.requests.get(self.results.get(result_id, ""))
+            if request is None:
+                self.flag("turn_context_foreign_source", turn_id)
+                continue
+            if entry["step_id"] != request["step_id"]:
+                self.flag("turn_context_step_mismatch", turn_id)
+            dispatch = request["dispatch"] or {}
+            if entry["source_kind"] == SOURCE_KIND_EVIDENCE:
+                if request["evidence_id"] != entry["evidence_id"]:
+                    self.flag("turn_context_evidence_mismatch", turn_id)
+                else:
+                    self.context_evidence.append((turn_id, entry["evidence_id"], entry["content_hash"]))
+            elif dispatch.get("status") in (None, "success") or not isinstance(dispatch.get("error_message"), str):
+                self.flag("turn_context_source_mismatch", turn_id)
+            elif hash_json_normalized(dispatch["error_message"]) != entry["content_hash"]:
+                self.flag("turn_context_hash_mismatch", turn_id)
+
+    def _on_turn_outcome(self, kind: str, ids, details) -> None:
+        subject = ids.get("agent_turn_id")
+        if not self._turn_details_ok(kind, details, subject):
+            if subject is not None and subject == self.pending_turn:
+                self.pending_turn = None
+            return
+        turn_id = details["turn_id"]
+        turn = self.turns.get(turn_id)
+        if turn is None or subject != turn_id:
+            self.flag("turn_outcome_without_manifest", turn_id)
+            return
+        if turn["outcome"] is not None:
+            self.flag("duplicate_turn_record", turn_id)
+            return
+        if self.pending_turn != turn_id:
+            self.flag("turn_order_invalid", turn_id)
+        if details["turn_sequence"] != turn["turn_sequence"]:
+            self.flag("turn_id_mismatch", turn_id)
+        if details["provider_request_hash"] != turn["provider_request_hash"]:
+            self.flag("turn_request_hash_mismatch", turn_id)
+        turn.update(
+            outcome=details["outcome"], accepted=details["accepted"], stop_reason=details["stop_reason"],
+            proposed_capability=details["proposed_capability"], explanation_status=details["explanation_status"],
+            explanation=details["explanation"], raw_output_hash=details["raw_output_hash"],
+        )
+        self.pending_turn = None
+        if details["outcome"] == "tool_request":
+            self.expect_capability = details["proposed_capability"]
+        elif details["outcome"] == "findings":
+            self.expect_findings, self.accepted_conclusion = details["findings_count"], True
+        elif details["outcome"] == "conclusion":
+            self.accepted_conclusion = True
+
+    def _on_agent_turn_received(self, index, ids, details) -> None:
+        self._on_turn_outcome("agent_turn_received", ids, details)
+
+    def _on_agent_turn_rejected(self, index, ids, details) -> None:
+        self._on_turn_outcome("agent_turn_rejected", ids, details)
 
     def _on_investigation_halted(self, index, ids, details) -> None:
         reason = details.get("reason") if isinstance(details, dict) else None
@@ -325,6 +499,8 @@ def reconstruct_investigation(
 
     builder = _Builder(investigation_id)
     builder.replay(records)
+    if builder.pending_turn is not None:
+        builder.flag("turn_outcome_missing", builder.pending_turn)
     if not records:
         status = ReviewStatus.NOT_FOUND
         builder.flag("no_audit_history")
@@ -342,6 +518,7 @@ def reconstruct_investigation(
         builder, finding_store, evidence_store, {e.evidence_id for e in evidence}
     )
     risks = _check_risk(builder, risk_store, risk_engine, stored_findings)
+    _check_turn_evidence(builder, evidence_store)
 
     return InvestigationReview(
         investigation_id=investigation_id,
@@ -354,8 +531,23 @@ def reconstruct_investigation(
         evidence=evidence,
         findings=findings,
         risk_assessments=risks,
+        turns=tuple(TurnRecord(**turn) for turn in builder.turns.values()),
         anomalies=tuple(builder.anomalies),
     )
+
+
+def _check_turn_evidence(builder: _Builder, evidence_store: Any) -> None:
+    """Phase 14 (CT-INV-6): an Evidence-backed context entry must hash to the
+    verified payload output of that Evidence in this investigation."""
+    for turn_id, evidence_id, content_hash in builder.context_evidence:
+        try:
+            evidence_store.verify_in_investigation(builder.investigation_id, evidence_id)
+            payload = evidence_store.get_payload(evidence_id)
+        except EvidenceStoreError:
+            builder.flag("turn_context_evidence_missing", turn_id)
+            continue
+        if not isinstance(payload, dict) or hash_json_normalized(payload.get("output")) != content_hash:
+            builder.flag("turn_context_hash_mismatch", turn_id)
 
 
 def _freeze_request(request: Dict[str, Any]) -> RequestRecord:

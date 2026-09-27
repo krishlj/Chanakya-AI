@@ -1707,13 +1707,130 @@ because AL-INV-1..9 already name the Phase 6 audit-log invariants above.)
   rewrite by a local attacker remain undetectable (T-18). Review does
   detect the *semantic* inconsistencies a partial rewrite leaves behind.
 - **Context composition.** Which results were in each turn's model
-  context is not recorded.
+  context is not recorded. *(Phase 14: now recorded; see "Durable agent
+  turn record (Phase 14)".)*
 - **Older streams.** Streams written before Phase 12 lack the facts and
   are reported with `details_missing`.
 - **Over-blocking.** Screening can over-block phrasing such as
   "api key: …" in an objective.
 - **Availability.** A model proposing credential-shaped parameters halts
   its own investigation (fail closed).
+
+#### Durable agent turn record (Phase 14)
+
+**Why.** Model influence was neither Runtime-owned nor durable. The caller
+chose which tool results the model saw, and nothing checked them. Model
+input, provider identity and model output were never recorded. Malformed
+or rejected output left no trace, and the SDK could take the provider
+endpoint from the environment (T-57, T-58, T-59).
+
+**Flow.**
+
+```
+Runtime (owns context sources)
+  → ContextAssembler → context data verified == Runtime-owned sources
+  → Context Manifest + Provider Identity + Provider Request Hash
+      → agent_turn_requested   (durable BEFORE the provider is called)
+  → Provider Request → LLM → Provider Response
+  → classification (nothing used yet)
+      → agent_turn_received | agent_turn_rejected   (durable BEFORE any use)
+  → ToolRequest / Finding / Conclusion → Intake → Policy Gateway → …
+Review ← Context Manifest + Request Hash + Identity + Outcome (+ Evidence)
+```
+
+**Turn records are forensic records and carry no authority.** They are
+never read by the Policy Gateway, approval, dispatch, the Tool Layer, the
+Registry or the Risk Engine. They are never fed back into model context:
+this is not conversation memory, and nothing is resumable.
+
+- **Runtime-owned context (CT-INV-2).** The controller keeps, per
+  investigation, the final tool result of each step it ran. It keeps a
+  SUCCESS only when its Evidence was recorded, and a failed or timed-out
+  result as a `tool_result_error` source. The model sees the last
+  `MAX_CONTEXT_ENTRIES` (5) of these, in order. `run_turn(...,
+  recent_tool_results=...)` is kept only for compatibility and selects
+  nothing. Every entry must be one of the current Runtime-owned results,
+  unaltered and not duplicated. An unknown, foreign, stale, altered or
+  duplicated entry fails the investigation (`context_source_rejected`)
+  before the provider is called. Whatever assembler runs, its `data` must
+  equal the Runtime-owned sources exactly. The CLI no longer passes results.
+- **Manifest.** It records:
+  - the template version plus the instruction and objective hashes;
+  - the catalog, target-view and environment-view hashes;
+  - ordered context entries (`tool_result_id`, `step_id`, `evidence_id`,
+    `content_hash`), never payloads;
+  - the provider identity;
+  - the provider request hash.
+
+  Turn ids are deterministic (`derive_agent_turn_id`) and sequences are
+  contiguous.
+- **Provider (CT-INV-4).** A *declared* provider (`AnthropicProvider`)
+  implements `provider_identity()`, `prepare_turn()` and `send_turn()`.
+  - The Runtime records the prepared request's hash before calling
+    `send_turn`.
+  - `send_turn` re-verifies the hash, then sends exactly that request.
+  - The endpoint is always explicit (`ProviderConfig.effective_endpoint`,
+    https only).
+  - The SDK client is checked to target it with no custom headers.
+  - The CLI refuses to start while `ANTHROPIC_BASE_URL`,
+    `ANTHROPIC_CUSTOM_HEADERS` or `ANTHROPIC_PROFILE` is set.
+
+  An in-process provider with only `next_turn` is recorded as `undeclared`.
+  Its request hash is the hash of the assembled context it was handed.
+- **Outcomes (CT-INV-3).** Classification happens before anything is used:
+  - more than one `tool_use` block → `multiple_tool_use_blocks`;
+  - a stop reason other than `end_turn`/`tool_use`/`stop_sequence` →
+    `unsupported_stop_reason`;
+  - structural failure → `malformed_turn` / `reserved_channel_misuse`;
+  - finding validation → `invalid_findings`;
+  - intake → `malformed_tool_request`;
+  - oversize → `provider_output_too_large`;
+  - an exception → `provider_failure`.
+
+  Rejections record the raw-output hash and a safe reason; raw output is
+  never stored. A rejected turn consumes one step of
+  `max_steps_per_investigation` (a malformed flood halts with
+  `max_steps_per_investigation_exceeded`). A malformed tool request already
+  consumed one through the existing path.
+- **Explanation.** Untrusted text. It is recorded only if it is at most
+  2000 characters, has no control characters and is not credential-shaped.
+  Otherwise it is withheld: its hash and a fixed status are recorded, and
+  it is never truncated or redacted. The turn is not failed, because the
+  Runtime never uses the explanation. This matches the "never repair, never
+  pretend" convention while keeping availability.
+- **Failure semantics (CT-INV-1).**
+  - A manifest write failure means no provider call; the backstop halts
+    (`audit_sink_failure`).
+  - An outcome write failure halts before the output is used.
+  - A provider exception is recorded, then fails the investigation, as
+    before.
+
+| ID | Invariant | Tests (`tests/test_agent_turn_record.py`) |
+|---|---|---|
+| CT-INV-1 | Every provider call is preceded by exactly one durable manifest and followed by exactly one durable outcome, or the investigation halts before the output is used. | `test_manifest_is_durable_before_the_provider_is_called`, `test_manifest_write_failure_means_no_provider_call`, `test_outcome_write_failure_means_the_output_is_never_used`, `test_every_provider_call_has_exactly_one_outcome`, `test_provider_failure_is_recorded_then_fails_closed` |
+| CT-INV-2 | Model context contains only data produced within the same investigation and composed by the Runtime. | `test_runtime_composes_context_from_its_own_results`, `test_context_window_is_the_latest_results_in_order`, `test_foreign_investigation_result_is_rejected_and_never_reaches_the_provider`, `test_caller_supplied_results_cannot_select_or_inject_context`, `test_an_assembler_that_adds_data_is_rejected` |
+| CT-INV-3 | Every rejected model output is durably recorded by safe reason code and integrity hash, without persisting unsafe raw content. | `test_rejected_provider_outputs_are_recorded_and_never_used`, `test_reserved_channel_misuse_is_recorded`, `test_malformed_turn_and_malformed_request_are_recorded`, `test_invalid_findings_are_recorded_and_nothing_is_stored`, `test_oversized_output_is_recorded_then_halts`, `test_raw_model_output_is_never_persisted` |
+| CT-INV-4 | Provider destination and identity are explicit, recorded, and never silently taken from implicit environment variables. | `test_declared_provider_identity_is_recorded`, `test_provider_request_hash_is_the_hash_of_the_exact_request_sent`, `test_prepared_request_is_reverified_before_sending`, `test_cli_refuses_environment_that_could_redirect_the_provider`, `test_environment_base_url_never_changes_the_recorded_or_used_endpoint`, `test_custom_headers_on_a_client_fail_closed`, `test_unsafe_endpoints_are_rejected` |
+| CT-INV-5 | Turn records carry no authority: policy, approval, dispatch and risk never use them. | `test_turn_records_are_unreachable_from_authorization_execution_and_risk`, `test_evaluation_context_carries_no_turn_data`, `test_turn_data_does_not_change_what_policy_approval_and_dispatch_receive`, `test_turn_records_are_not_fed_back_into_model_context` |
+| CT-INV-6 | Review verifies turn manifests against Evidence and recorded context artifacts. | `test_review_reconstructs_turns_consistently`, the `test_review_detects_*` tests (missing manifest or outcome, rejected output without a record, duplicates and gaps, forged request hash, provider or endpoint change, context mismatches, tampered Evidence, instruction mismatch, events after terminal, completion without an accepted turn), `test_turn_events_do_not_exist_before_contract_1_1_0` |
+| CT-INV-7 | No credential reaches durable turn records. | `test_unsafe_explanations_are_withheld_never_persisted`, `test_raw_model_output_is_never_persisted`, `test_credential_shaped_capability_name_halts_before_use`, `test_no_credential_or_header_reaches_turn_records`, `test_stored_details_validator_rejects_unsafe_or_inconsistent_records` |
+
+Golden fixture: `tests/fixtures/agent_turn_golden.json` pins the manifest,
+outcome, provider identity and a canonical provider request hash.
+
+**Limitations.**
+- The request hash of a declared provider is computed by the provider
+  adapter (trusted code). The Runtime cannot independently observe the
+  bytes on the wire. A parity test shows the recorded hash equals the SDK
+  kwargs, and those equal the request body.
+- Review cannot recompute the provider request or the catalog/target
+  hashes (neither the catalog nor the views are stored). It verifies
+  instruction and objective hashes, context references and Evidence
+  content, identity consistency and request/outcome agreement.
+- A local attacker who rewrites the whole chain consistently is still not
+  detected (T-18).
+- The context window, sequence counter and context sources are in memory.
+  Nothing here makes an investigation resumable.
 
 **`RuntimeExecutionLimits`** — admin-controlled configuration (trusted,
 versioned, not Agent-writable), analogous to `PolicySet`.

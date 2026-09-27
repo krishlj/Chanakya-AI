@@ -35,7 +35,8 @@ from chanakya.contracts.audit_details import (
     risk_context_details,
     text_fact,
 )
-from chanakya.contracts.audit_event import AuditEvent, AuditEventType, AuditSeverity
+from chanakya.contracts.agent_turn import ContextManifest, TurnOutcomeRecord
+from chanakya.contracts.audit_event import AUDIT_EVENT_CONTRACT_VERSION, AuditEvent, AuditEventType, AuditSeverity
 from chanakya.contracts.policy_decision import PolicyDecision
 from chanakya.contracts.risk_assessment import RiskAssessment
 from chanakya.contracts.tool_request import ToolRequest
@@ -45,7 +46,9 @@ from .clock import utcnow_iso
 from .dispatch import DispatchInstruction
 from .exceptions import AuditSinkError
 
-_CONTRACT_VERSION = "1.0.0"
+#: Phase 14: every event is emitted under AuditEvent contract 1.1.0, the
+#: version that introduced the agent turn event types (docs/CONTRACTS.md §13).
+_CONTRACT_VERSION = AUDIT_EVENT_CONTRACT_VERSION
 
 
 class AuditSink(Protocol):
@@ -417,4 +420,34 @@ class AuditEmitter:
                 "scoring_method": risk_assessment.scoring_method,
                 "rule_ids": list(risk_assessment.rule_ids),
             },
+        )
+
+    # -- Phase 14: forensic model-turn records (docs/CONTRACTS.md §14) ------
+
+    def agent_turn_requested(self, investigation_id: str, manifest: ContextManifest, *, actor: str = "system") -> AuditEvent:
+        """The context manifest, durable BEFORE the provider is called
+        (CT-INV-1). A fact that cannot be recorded safely is an audit write
+        failure, so the provider is never called."""
+        details = _facts(manifest.to_details)
+        return self._emit(
+            AuditEventType.AGENT_TURN_REQUESTED,
+            actor=actor,
+            investigation_id=investigation_id,
+            related_ids={"agent_turn_id": details["turn_id"]},
+            details=details,
+        )
+
+    def agent_turn_outcome(self, investigation_id: str, record: TurnOutcomeRecord, *, actor: str = "agent") -> AuditEvent:
+        """Exactly one per requested turn: ``agent_turn_received`` when the
+        Runtime accepted the output, ``agent_turn_rejected`` otherwise
+        (including provider failure). Durable BEFORE any accepted output is
+        used (CT-INV-1). Forensic only; it authorizes nothing (CT-INV-5)."""
+        details = _facts(record.to_details)
+        return self._emit(
+            AuditEventType.AGENT_TURN_RECEIVED if record.accepted else AuditEventType.AGENT_TURN_REJECTED,
+            actor=actor,
+            investigation_id=investigation_id,
+            related_ids={"agent_turn_id": details["turn_id"]},
+            details=details,
+            severity=None if record.accepted else AuditSeverity.WARNING,
         )

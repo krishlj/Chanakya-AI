@@ -37,6 +37,19 @@ class AuditEventType(str, Enum):
     INVESTIGATION_COMPLETED = "investigation_completed"
     INVESTIGATION_HALTED = "investigation_halted"
     ERROR = "error"
+    #: Phase 14 (contract_version 1.1.0): forensic model-turn records.
+    AGENT_TURN_REQUESTED = "agent_turn_requested"
+    AGENT_TURN_RECEIVED = "agent_turn_received"
+    AGENT_TURN_REJECTED = "agent_turn_rejected"
+
+
+#: The version the Runtime emits since Phase 14. 1.0.0 streams (Phases 6-13)
+#: stay readable; the turn event types exist only from 1.1.0.
+AUDIT_EVENT_CONTRACT_VERSION = "1.1.0"
+SUPPORTED_AUDIT_EVENT_VERSIONS = frozenset({"1.0.0", AUDIT_EVENT_CONTRACT_VERSION})
+AGENT_TURN_EVENT_TYPES = frozenset(
+    {AuditEventType.AGENT_TURN_REQUESTED, AuditEventType.AGENT_TURN_RECEIVED, AuditEventType.AGENT_TURN_REJECTED}
+)
 
 
 class AuditSeverity(str, Enum):
@@ -62,3 +75,8 @@ class AuditEvent:
     def __post_init__(self) -> None:
         if not self.actor:
             raise ValueError("AuditEvent.actor must be non-empty")
+        if self.contract_version not in SUPPORTED_AUDIT_EVENT_VERSIONS:
+            raise ValueError(f"unsupported AuditEvent.contract_version: {self.contract_version!r}")
+        # docs/CONTRACTS.md §13: new event types only through a version bump.
+        if self.event_type in AGENT_TURN_EVENT_TYPES and self.contract_version == "1.0.0":
+            raise ValueError("agent turn event types require AuditEvent contract_version 1.1.0")

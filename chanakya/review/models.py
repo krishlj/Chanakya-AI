@@ -123,6 +123,30 @@ class RiskRecord:
 
 
 @dataclass(frozen=True)
+class TurnRecord:
+    """Phase 14: one model turn as recorded (manifest + outcome). Forensic
+    data only; it carries no authority."""
+
+    turn_id: str
+    turn_sequence: int
+    provider: str
+    model: Optional[str]
+    endpoint: Optional[str]
+    config_version: Optional[str]
+    declared: bool
+    provider_request_hash: str
+    instructions_hash: str
+    context_sources: Tuple[str, ...]
+    outcome: Optional[str] = None           # None if no outcome was recorded
+    accepted: Optional[bool] = None
+    stop_reason: Optional[str] = None
+    proposed_capability: Optional[str] = None
+    explanation_status: Optional[str] = None
+    explanation: Optional[str] = None       # model-authored, screened; escape on display
+    raw_output_hash: Optional[str] = None
+
+
+@dataclass(frozen=True)
 class InvestigationReview:
     investigation_id: str
     status: ReviewStatus
@@ -134,6 +158,8 @@ class InvestigationReview:
     evidence: Tuple[EvidenceRecord, ...] = ()
     findings: Tuple[FindingRecord, ...] = ()
     risk_assessments: Tuple[RiskRecord, ...] = ()
+    #: Phase 14: model turns, in order (empty for pre-1.1.0 streams).
+    turns: Tuple[TurnRecord, ...] = ()
     anomalies: Tuple[Anomaly, ...] = field(default_factory=tuple)
 
     @property
@@ -154,4 +180,5 @@ __all__ = [
     "RequestRecord",
     "ReviewStatus",
     "RiskRecord",
+    "TurnRecord",
 ]

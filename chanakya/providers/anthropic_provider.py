@@ -81,14 +81,34 @@ module satisfies each:
 """
 from __future__ import annotations
 
+import copy
 from typing import Any, Mapping, Optional
 
 import anthropic
 
+from chanakya.contracts.agent_turn import (
+    PreparedProviderRequest,
+    ProviderIdentity,
+    ProviderResponse,
+    hash_value,
+)
 from chanakya.runtime.context_assembler import AssembledContext
 
 from . import mapping
 from .config import ProviderConfig
+
+#: Phase 14 (T-59): environment variables through which the Anthropic SDK
+#: would take a security-sensitive setting (destination, extra headers, a
+#: profile that can carry a base URL) from the process environment. The CLI
+#: composition root (the one place that reads the environment) refuses to
+#: start while any is set; only the names are checked, never the values.
+#: This module reads no environment: it passes an explicit ``base_url`` and
+#: then verifies the built client's actual endpoint and headers.
+FORBIDDEN_SDK_ENVIRONMENT = ("ANTHROPIC_BASE_URL", "ANTHROPIC_CUSTOM_HEADERS", "ANTHROPIC_PROFILE")
+
+
+def _normalized_endpoint(value: Any) -> str:
+    return str(value).rstrip("/")
 
 
 class AnthropicProvider:
@@ -127,33 +147,74 @@ class AnthropicProvider:
         # the request body (investigation data). Redirects are therefore
         # never followed: a 3xx surfaces as an SDK status error and takes
         # the Runtime's existing fail-closed provider-failure path.
-        self._client = (
-            client
-            if client is not None
-            else anthropic.Anthropic(
+        #
+        # Phase 14 (T-59, CT-INV-4): the destination is explicit. The SDK is
+        # always given ``config.effective_endpoint`` as ``base_url`` (so
+        # ANTHROPIC_BASE_URL and profile base URLs are never consulted), and
+        # a real SDK client is checked to target exactly that endpoint with
+        # no custom headers (ANTHROPIC_CUSTOM_HEADERS would add some), or
+        # construction fails closed.
+        if client is None:
+            client = anthropic.Anthropic(
                 api_key=api_key,
-                base_url=config.endpoint,
+                base_url=config.effective_endpoint,
                 timeout=config.timeout_seconds,
                 http_client=anthropic.DefaultHttpxClient(
                     follow_redirects=False,
                     timeout=config.timeout_seconds,
                 ),
             )
+        if isinstance(client, anthropic.Anthropic):
+            if _normalized_endpoint(client.base_url) != _normalized_endpoint(config.effective_endpoint):
+                raise ValueError("provider client does not target the configured endpoint")
+            if dict(getattr(client, "_custom_headers", None) or {}):
+                raise ValueError("provider client carries custom headers; refusing to send investigation data")
+        self._client = client
+        self._identity = ProviderIdentity(
+            provider=config.provider,
+            model=config.model,
+            endpoint=_normalized_endpoint(config.effective_endpoint),
+            config_version=config.provider_config_version,
+            timeout_seconds=float(config.timeout_seconds),
+            max_tokens=mapping.effective_max_tokens(config),
         )
 
-    def next_turn(self, assembled_context: AssembledContext) -> Mapping[str, Any]:
-        """Implements ``AgentProvider.next_turn``. Raises whatever the
-        underlying SDK call raises (timeout, auth failure, rate limit,
-        connection error, ...) — never caught or converted into a
-        turn-shaped result here (LLM-INV-9)."""
-        request_kwargs = mapping.build_request_kwargs(assembled_context, self._config)
+    # -- Phase 14: declared identity and a two-phase, recordable call ----------
+
+    def provider_identity(self) -> ProviderIdentity:
+        """Provider, model, explicit endpoint, configuration version,
+        timeout and max tokens. Never the credential or any header."""
+        return self._identity
+
+    def prepare_turn(self, assembled_context: AssembledContext) -> PreparedProviderRequest:
+        """Builds the exact request ``send_turn`` will send, and its
+        canonical hash. The Runtime records the hash before sending."""
+        payload = copy.deepcopy(dict(mapping.build_request_kwargs(assembled_context, self._config)))
+        return PreparedProviderRequest(
+            payload=payload, request_hash=hash_value(payload), investigation_id=assembled_context.investigation_id
+        )
+
+    def send_turn(self, prepared: PreparedProviderRequest) -> ProviderResponse:
+        """Sends exactly the prepared request (re-verified against its hash)
+        and returns the turn mapping plus the stop reason and tool-block
+        count. Raises whatever the SDK raises (LLM-INV-9)."""
+        request_kwargs = copy.deepcopy(dict(prepared.payload))
+        if hash_value(request_kwargs) != prepared.request_hash:
+            raise ValueError("prepared provider request does not match its recorded hash")
         response = self._client.messages.create(**request_kwargs)
         convert = (
             mapping.response_to_turn_mapping_with_findings
             if self._config.findings_channel
             else mapping.response_to_turn_mapping
         )
-        return convert(response, investigation_id=assembled_context.investigation_id)
+        stop_reason, tool_use_blocks = mapping.response_metadata(response)
+        turn = convert(response, investigation_id=prepared.investigation_id)
+        return ProviderResponse(turn=turn, stop_reason=stop_reason, tool_use_blocks=tool_use_blocks)
 
+    def next_turn(self, assembled_context: AssembledContext) -> Mapping[str, Any]:
+        """Implements ``AgentProvider.next_turn`` as one call. The Runtime
+        uses ``prepare_turn``/``send_turn`` so the request is recorded
+        first. Raises whatever the SDK call raises (LLM-INV-9)."""
+        return self.send_turn(self.prepare_turn(assembled_context)).turn
 
-__all__ = ["AnthropicProvider"]
+__all__ = ["AnthropicProvider", "FORBIDDEN_SDK_ENVIRONMENT"]

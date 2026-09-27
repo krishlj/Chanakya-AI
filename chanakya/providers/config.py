@@ -50,6 +50,15 @@ from typing import Optional
 MIN_TEMPERATURE = 0.0
 MAX_TEMPERATURE = 1.0
 
+#: Phase 14 (T-59): the trusted default endpoint. ``endpoint=None`` means
+#: exactly this URL, never "whatever the vendor SDK resolves from the
+#: environment or a profile".
+DEFAULT_ANTHROPIC_ENDPOINT = "https://api.anthropic.com"
+
+#: Phase 14: the version of this provider configuration, recorded in every
+#: agent turn record so the configuration a turn ran under is identifiable.
+PROVIDER_CONFIG_VERSION = "1.0.0"
+
 
 @dataclass(frozen=True)
 class ProviderConfig:
@@ -70,9 +79,9 @@ class ProviderConfig:
             seconds. Distinct from — and never a substitute for —
             `RuntimeExecutionLimits.default_step_timeout_seconds`, which
             governs tool dispatch, not the LLM call.
-        endpoint: Optional API base URL override. ``None`` means "use the
-            vendor SDK's own default endpoint," not "unlimited" or
-            "unrestricted."
+        endpoint: Optional API base URL override (``https://`` only, Phase
+            14). ``None`` means ``DEFAULT_ANTHROPIC_ENDPOINT``, never an
+            SDK default resolved from the environment or a profile.
         max_output_tokens: Optional cap on the model's output length, as
             a request-time sampling parameter passed to the vendor.
             ``None`` means "not configured here — the adapter decides,
@@ -98,9 +107,16 @@ class ProviderConfig:
     #: ``report_findings`` channel. Off by default, so requests are
     #: unchanged unless a composition root enables it.
     findings_channel: bool = False
+    #: Phase 14: recorded in every agent turn record (as ``config_version``).
+    provider_config_version: str = PROVIDER_CONFIG_VERSION
+
+    @property
+    def effective_endpoint(self) -> str:
+        """The endpoint requests go to: explicit, never implicit (T-59)."""
+        return self.endpoint if self.endpoint is not None else DEFAULT_ANTHROPIC_ENDPOINT
 
     def __post_init__(self) -> None:
-        for field_name in ("provider", "model", "api_key_env_var"):
+        for field_name in ("provider", "model", "api_key_env_var", "provider_config_version"):
             value = getattr(self, field_name)
             if not isinstance(value, str) or not value:
                 raise ValueError(f"ProviderConfig.{field_name} must be a non-empty string")
@@ -115,9 +131,12 @@ class ProviderConfig:
                 raise ValueError("ProviderConfig.endpoint must be a non-empty string if present")
             # Deliberately minimal — a scheme check only, not a full URL
             # grammar/RFC validation (Phase 5.6 design report: "do not
-            # over-engineer URL validation").
-            if not (self.endpoint.startswith("http://") or self.endpoint.startswith("https://")):
-                raise ValueError("ProviderConfig.endpoint must start with 'http://' or 'https://' if present")
+            # over-engineer URL validation"). Phase 14 (T-59): https only;
+            # a plaintext endpoint would send the API key in cleartext.
+            if not self.endpoint.startswith("https://") or len(self.endpoint) == len("https://"):
+                raise ValueError("ProviderConfig.endpoint must start with 'https://' if present")
+            if any(ch.isspace() or ch == "@" for ch in self.endpoint):
+                raise ValueError("ProviderConfig.endpoint must not contain whitespace or userinfo")
 
         if self.max_output_tokens is not None:
             if (

@@ -91,3 +91,16 @@ class MalformedAgentTurnOutputError(ValueError):
     validation. Must never propagate past the Agent Loop Controller
     boundary — a malformed turn is surfaced as information, never
     corrected on the Agent's behalf (RT-INV-5)."""
+
+
+class ContextSourceError(RuntimeInvariantError):
+    """Phase 14 (CT-INV-2): a tool result offered for model context was not
+    produced by this investigation's own recent steps (foreign, unknown,
+    altered, duplicated or stale), or an assembler put something other than
+    the Runtime-owned sources into the context. The investigation fails
+    closed before the provider is called; nothing is silently dropped."""
+
+
+class ProviderContractError(RuntimeInvariantError):
+    """Phase 14: a declared provider returned an identity, prepared request
+    or response of the wrong shape. Treated as a provider failure."""

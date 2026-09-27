@@ -128,11 +128,15 @@ def test_every_runtime_event_is_persisted_in_order(target_registry, resource_gov
     assert w.propose(context, "terminate_process", {"pid": 1}).outcome == TurnOutcome.STEP_COMPLETED
     assert w.conclude(context).outcome == TurnOutcome.CONCLUDED
 
+    # Phase 14: every model turn is bracketed by its manifest and outcome.
     assert types(log, context.investigation_id) == [
         E.INVESTIGATION_STARTED,
+        E.AGENT_TURN_REQUESTED, E.AGENT_TURN_RECEIVED,
         E.REQUEST_PROPOSED, E.POLICY_EVALUATED, E.DISPATCH_STARTED, E.DISPATCH_COMPLETED, E.EVIDENCE_RECORDED,
+        E.AGENT_TURN_REQUESTED, E.AGENT_TURN_RECEIVED,
         E.REQUEST_PROPOSED, E.POLICY_EVALUATED, E.APPROVAL_REQUESTED, E.APPROVAL_DECIDED,
         E.DISPATCH_STARTED, E.DISPATCH_COMPLETED, E.EVIDENCE_RECORDED,
+        E.AGENT_TURN_REQUESTED, E.AGENT_TURN_RECEIVED,
         E.INVESTIGATION_COMPLETED,
     ]
     assert log.verify(context.investigation_id)
@@ -284,7 +288,9 @@ def test_documented_existing_behavior_when_the_sink_stays_broken(
     assert context.status == InvestigationStatus.HALTED
     assert result.outcome == TurnOutcome.FAILED
     assert w.executor.calls == []
-    assert types(log, context.investigation_id) == [E.INVESTIGATION_STARTED]
+    assert types(log, context.investigation_id) == [
+        E.INVESTIGATION_STARTED, E.AGENT_TURN_REQUESTED, E.AGENT_TURN_RECEIVED  # Phase 14 turn records
+    ]
 
 
 class _AlsoFail:

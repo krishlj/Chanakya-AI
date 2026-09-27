@@ -198,9 +198,18 @@ def test_valid_https_endpoint_accepted():
     assert config.endpoint == "https://api.anthropic.com"
 
 
-def test_valid_http_endpoint_accepted():
-    config = _config(endpoint="http://localhost:8080")
-    assert config.endpoint == "http://localhost:8080"
+def test_http_endpoint_rejected():
+    """Phase 14 (T-59): plaintext endpoints would carry the API key in
+    cleartext; only https is accepted."""
+    with pytest.raises(ValueError, match="https"):
+        _config(endpoint="http://localhost:8080")
+
+
+def test_endpoint_none_means_the_explicit_trusted_default():
+    from chanakya.providers.config import DEFAULT_ANTHROPIC_ENDPOINT
+
+    assert _config().effective_endpoint == DEFAULT_ANTHROPIC_ENDPOINT == "https://api.anthropic.com"
+    assert _config(endpoint="https://gateway.example.test").effective_endpoint == "https://gateway.example.test"
 
 
 # ===========================================================================

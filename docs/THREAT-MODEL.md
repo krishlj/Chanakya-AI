@@ -426,6 +426,18 @@ Likelihood/Impact/Risk use: **Low / Medium / High / Critical**.
   intrinsic to LLM-based analysis; it cannot be fully eliminated by
   formatting alone, only bounded by keeping the Agent execution-incapable
   and keeping conclusions checkable against evidence.
+- **Phase 14 status (PARTIAL; detective control now operative)**:
+  - Every model turn durably records what the model was given (ordered
+    tool-result references with content hashes, instruction, catalog and
+    target/environment hashes) and what it returned (accepted or rejected
+    outcome, raw-output hash, screened explanation).
+  - The "audit correlation between Evidence content and subsequent Agent
+    proposals" detective control is therefore possible. Review ties each
+    request, finding and completion to the accepted turn that produced it,
+    and each context entry to verified Evidence.
+  - Injection attempts that fail validation are no longer invisible.
+  - *Unchanged:* the model can still be steered within valid output
+    (residual Medium). Preventive controls are the same as before.
 
 ### T-04 — Malicious or misleading MCP tool definitions
 - **Attack path**: An MCP server declares a tool as read-only or
@@ -642,6 +654,12 @@ Likelihood/Impact/Risk use: **Low / Medium / High / Critical**.
 - **Mitigations**: Same controls as T-03 (indirect injection) apply
   directly, since this is that threat's root cause.
 - **Residual risk**: Medium — see T-03.
+- **Phase 14 status (PARTIAL)**: as T-03.
+  - Hostile target output that reaches the model is now attributable: which
+    turn, which Evidence, and which hash.
+  - Only results the investigation itself produced can reach its context
+    (T-58).
+  - Oversized or multi-action responses are rejected and recorded.
 
 ### T-13 — Untrusted files exploit a parser or carry injection payloads
 - **Attack path**: A capability reads a file from the target (config,
@@ -1269,8 +1287,10 @@ boundary: the Review layer only reads.
   *Residual:*
   - a local attacker who rewrites the whole chain and every store
     consistently is not detected (T-18);
-  - the per-turn composition of model context is not recorded;
-  - streams written before Phase 12 lack the facts.
+  - the per-turn composition of model context is not recorded
+    (*Phase 14: now recorded*; see T-57);
+  - streams written before Phase 12 lack the facts, and streams written
+    before Phase 14 (AuditEvent 1.0.0) have no turn records.
 - **T-55 candidate — Silent incomplete investigation.** A crash left an
   audit stream with no terminal event, indistinguishable from a running
   investigation, and cross-store inconsistencies went unreported.
@@ -1287,6 +1307,71 @@ boundary: the Review layer only reads.
   - tail truncation of a completed stream reads as `INCOMPLETE`, not as
     tampering;
   - there is no resume.
+
+### Candidate threats from Phase 14 (durable agent turn record)
+
+Phase 14 adds forensic turn records to the existing audit stream (TB-8)
+and moves context composition inside the Runtime (TB-3). It adds no trust
+boundary. **Turn records are forensic records and carry no authority.**
+
+- **T-57 candidate: unrecorded model influence** (TB-3/TB-8; extends the
+  T-54 residual). Before Phase 14, malformed or rejected model output,
+  reserved-channel misuse, the model's explanation and the provider used
+  left no durable trace. Review showed a clean completion.
+  *Controls (MITIGATED for the recorded facts):*
+  - `agent_turn_requested` is durable before every provider call;
+  - exactly one `agent_turn_received`/`agent_turn_rejected` is durable
+    before any output is used, with fixed outcome codes and a raw-output
+    hash;
+  - Review flags missing, duplicated, out-of-order, gapped or mismatched
+    turn records, and requests, findings or completions without an
+    accepted turn (CT-INV-1/3/6).
+
+  *Residual:* raw output is stored only as a hash, so its content cannot be
+  replayed; the explanation is withheld when unsafe; a consistent
+  full-chain rewrite remains undetected (T-18).
+- **T-58 candidate: caller-composed model context** (TB-3). The caller
+  selected `recent_tool_results`, with no scope check, so results from
+  another investigation or fabricated ones could reach the model.
+  *Controls (MITIGATED):*
+  - the Runtime composes context only from results it produced for the
+    same investigation (Evidence-backed successes, audited failures),
+    windowed to 5;
+  - caller-supplied results must be exactly those, or the investigation
+    fails closed before the provider is called;
+  - assembler output is verified against the Runtime-owned sources;
+  - Review resolves every context entry to an earlier result of the same
+    investigation (CT-INV-2).
+
+  *Residual:* the window and sources are in-memory Runtime state (no
+  resume).
+- **T-59 candidate: environment-controlled provider destination** (TB-2;
+  T-21/T-22). With `endpoint=None` the Anthropic SDK consulted
+  `ANTHROPIC_BASE_URL`, merged `ANTHROPIC_CUSTOM_HEADERS` and accepted
+  `http://`, so the API key and investigation data could be redirected
+  or sent in cleartext.
+  *Controls (MITIGATED):*
+  - `ProviderConfig` accepts `https://` only, and `endpoint=None` means
+    the fixed `DEFAULT_ANTHROPIC_ENDPOINT`;
+  - the provider always passes an explicit `base_url` and refuses a
+    client that targets another endpoint or carries custom headers;
+  - the CLI refuses to start while `ANTHROPIC_BASE_URL`,
+    `ANTHROPIC_CUSTOM_HEADERS` or `ANTHROPIC_PROFILE` is set;
+  - the effective endpoint and provider identity are recorded per turn,
+    and Review flags a change (CT-INV-4).
+
+  *Residual:* the endpoint is trusted code configuration, not
+  authenticated configuration; a code change can still alter it.
+- **T-33 (re-review, TARGET-AWARE-AGENT-CONTEXT.md): cross-investigation
+  context leakage.** Phase 14 introduces per-investigation Runtime state
+  (context sources) and durable manifests, the re-review trigger T-33
+  names. The sources are keyed by investigation id. Caller-supplied
+  results from another investigation are rejected (test: foreign result
+  never reaches the provider). Manifests carry references and hashes
+  only, never payloads.
+  *Status:* MITIGATED for the Runtime path.
+  *Residual:* it must be re-reviewed again if context is ever persisted or
+  resumed.
 
 ---
 

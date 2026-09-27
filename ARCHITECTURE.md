@@ -126,6 +126,27 @@ Responsibilities:
 This layer is also the natural enforcement point for redacting secrets
 from anything sent to the LLM (see §15).
 
+**Status (Phase 14):** model influence is Runtime-owned and durable.
+
+```
+Runtime → Context Manifest → Provider Request → Provider Response → Turn Outcome → Review
+```
+
+- **Context.** The Runtime composes model context only from tool results
+  the investigation itself produced. The caller cannot add or select one.
+- **Before the call.** Each turn records a context manifest: template
+  version, instruction/objective/catalog/view hashes, and ordered context
+  references with content hashes. It also records the provider identity
+  (provider, model, explicit https endpoint, configuration version,
+  timeout, max tokens) and the hash of the exact request. All of this is
+  durable before the provider is called.
+- **After the call.** Exactly one accepted or rejected outcome is durable
+  before any output is used.
+- **Destination.** The provider endpoint never comes from the environment.
+- **Authority.** Turn records are forensic records and carry no authority.
+  See `docs/CONTRACTS.md` §14 and `docs/AGENT-RUNTIME.md` "Durable agent
+  turn record (Phase 14)".
+
 ## 5. Policy & Security Gateway
 
 The sole authority on whether a proposed action may run. Responsibilities:
@@ -392,6 +413,17 @@ anchor. Design, invariants (AL-INV-1..9) and limitations:
   nothing.
 - **Still in memory.** Live Runtime state (`InvestigationContext`,
   `StepRecord`s) remains in memory; there is no persistence or resume.
+
+**Status (Phase 14):** the audit stream (AuditEvent contract `1.1.0`) also
+records every model turn:
+- `agent_turn_requested` (context manifest, provider identity, request
+  hash);
+- then `agent_turn_received` or `agent_turn_rejected` (outcome, raw-output
+  hash, screened explanation).
+
+Review reconstructs model influence and flags missing, duplicated or
+mismatched turn records. Nothing becomes resumable: the context window and
+turn sequence are still in-memory Runtime state.
 
 See `docs/AGENT-RUNTIME.md` "Durable authorization record and
 investigation review (Phase 12)".

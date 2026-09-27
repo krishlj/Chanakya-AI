@@ -35,7 +35,12 @@ rebuilds a past investigation from the durable stores through
 ``chanakya.review``. It is read-only: it reads no credential, builds no
 Runtime, provider, Gateway or executor, and creates no files.
 
-Known gaps (deferred): the Agent's explanation text is not shown
+Phase 14: the Runtime composes model context itself (``run_investigation``
+passes no tool results), the provider endpoint is explicit (the CLI refuses
+to start while an SDK redirect variable is set), and ``--review`` shows each
+model turn's forensic record, including a screened explanation.
+
+Known gaps (deferred): the Agent's explanation text is not shown live
 (``TurnResult`` does not carry it); live investigation state is in memory
 only (Evidence, Findings, RiskAssessments and the Audit Log are durable, and
 reviewable with ``--review``); no justification is collected with an
@@ -65,7 +70,7 @@ from chanakya.contracts.target import Target, TargetStatus
 from chanakya.evidence import EvidenceStore
 from chanakya.findings import FindingStore
 from chanakya.policy import PolicyGateway, PolicyRule, PolicySet, RuleMatch
-from chanakya.providers.anthropic_provider import AnthropicProvider
+from chanakya.providers.anthropic_provider import FORBIDDEN_SDK_ENVIRONMENT, AnthropicProvider
 from chanakya.providers.config import ProviderConfig
 from chanakya.registry.bootstrap import production_registry_entries
 from chanakya.registry.registry import SecurityToolRegistry
@@ -86,7 +91,6 @@ DEFAULT_MODEL = "claude-opus-5-5"
 API_KEY_ENV_VAR = "ANTHROPIC_API_KEY"
 DEFAULT_MAX_TURNS = 8
 LOCAL_TARGET_ID = "local-host"
-_RECENT_RESULTS = 5
 _MAX_DETAIL_CHARS = 300
 
 EXIT_COMPLETED = 0
@@ -276,19 +280,17 @@ def run_investigation(
     output.write(f"investigation: {context.investigation_id}\n")
     output.flush()
 
-    recent: Tuple[Any, ...] = ()
     interrupted = False
     try:
         for turn in range(1, max_turns + 1):
+            # Phase 14 (CT-INV-2): the Runtime composes the model context from
+            # this investigation's own results; the CLI selects nothing.
             result = runtime.controller.run_turn(
                 context.investigation_id,
                 agent,
                 capability_catalog=runtime.registry.catalog_view(),
-                recent_tool_results=recent,
             )
             _report(output, turn, result)
-            if result.tool_result is not None:
-                recent = (recent + (result.tool_result,))[-_RECENT_RESULTS:]
             if context.is_terminal or result.outcome == TurnOutcome.AWAITING_APPROVAL:
                 break
         if not context.is_terminal:
@@ -451,6 +453,22 @@ def _render_review(output: TextIO, review: Any) -> None:
             )
         if request.evidence_id is not None:
             write(f"      evidence: {_safe(request.evidence_id)}\n")
+    # Phase 14: model turns (forensic records; no authority). Every value is
+    # escaped; explanations appear only if they were recorded (screened).
+    write(f"model turns: {len(review.turns)} (forensic records of model influence; they authorize nothing)\n")
+    for turn in review.turns:
+        status = "no outcome recorded" if turn.outcome is None else ("accepted" if turn.accepted else "rejected")
+        write(
+            f"  [{turn.turn_sequence}] {_safe(turn.outcome)} ({status}); stop reason {_safe(turn.stop_reason)}"
+            + (f"; proposed {_safe(turn.proposed_capability)}" if turn.proposed_capability else "")
+            + "\n"
+            f"      provider {_safe(turn.provider)} model {_safe(turn.model)} endpoint {_safe(turn.endpoint)}"
+            f" config {_safe(turn.config_version)}\n"
+            f"      request {_safe(turn.provider_request_hash)}; context {_safe(list(turn.context_sources))}\n"
+            f"      explanation: {_safe(turn.explanation_status)}"
+            + (f" {_safe(turn.explanation)}" if turn.explanation is not None else "")
+            + "\n"
+        )
     write(f"evidence records: {len(review.evidence)}\n")
     for evidence in review.evidence:
         write(
@@ -531,6 +549,13 @@ def main(
         timeout_seconds=60.0,
         findings_channel=True,
     )
+    # Phase 14 (T-59): the provider destination and headers come only from
+    # ProviderConfig. An environment that would redirect them is refused;
+    # only variable names are checked, never their values.
+    redirecting = [name for name in FORBIDDEN_SDK_ENVIRONMENT if name in environ]
+    if redirecting:
+        output.write(f"error: unset {', '.join(redirecting)}; the provider endpoint is fixed by configuration\n")
+        return EXIT_CONFIG_ERROR
     api_key = environ.get(config.api_key_env_var)  # the only read of the credential
     if not api_key:
         output.write(f"error: environment variable {config.api_key_env_var} is not set\n")

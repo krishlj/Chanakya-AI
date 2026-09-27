@@ -854,7 +854,9 @@ by inventing ad hoc strings): `investigation_started`, `request_proposed`,
 `dispatch_started`, `dispatch_completed`, `dispatch_failed`,
 `evidence_recorded`, `finding_created`, `risk_assessed`,
 `recommendation_created`, `investigation_completed`, `investigation_halted`,
-`error`.
+`error`; and, from `contract_version` `1.1.0` (Phase 14),
+`agent_turn_requested`, `agent_turn_received`, `agent_turn_rejected`
+(see §14).
 
 **Validation requirements**
 - `event_type` must be one of the defined values.
@@ -885,6 +887,13 @@ five existing event types carry additive, bounded facts, defined in
   validates these facts against closed shapes. They are a durable record,
   never an authorization input.
 
+**Version 1.1.0 (Phase 14).** The Runtime now emits every `AuditEvent`
+under `contract_version` `1.1.0`, the version that adds the three agent turn
+event types. `1.0.0` streams (Phases 6–13) remain readable. A `1.0.0` event
+may not carry a turn event type, and an unrecognized version is rejected on
+construction and on read. Review requires turn records for `1.1.0` streams
+and flags them in `1.0.0` streams.
+
 **Security considerations**
 - Must never include raw secrets. When echoing something like an
   `ApprovalDecision.justification`, that string is subject to the same
@@ -913,6 +922,90 @@ five existing event types carry additive, bounded facts, defined in
   }
 }
 ```
+
+---
+
+## 14. AgentTurnRecord (context manifest and turn outcome) — Phase 14
+
+**Purpose**: Forensic provenance of model influence. For every call to the
+model the Runtime records what the model was given, which provider, model
+and endpoint served it, the integrity hash of the exact request, and what
+came back: accepted or rejected, and why. **Turn records are forensic
+records and carry no authority.** Nothing in the Policy Gateway, approval,
+dispatch, the Tool Layer, the Registry or the Risk Engine reads them, and
+they are never fed back into model context (they are not conversation
+memory).
+
+- **Producer**: Agent Runtime (`AgentLoopController`), through
+  `AuditEmitter.agent_turn_requested` / `agent_turn_outcome`.
+- **Consumer**: the Audit Log (durable, hash-chained) and the read-only
+  Investigation Review (`chanakya/review/`).
+- **Storage decision**: turn records are `details` of three `AuditEvent`
+  types, not a separate store. The audit chain already gives append-only,
+  integrity-protected, investigation-scoped, credential-screened, bounded
+  storage and ordering relative to the authorization events; a second
+  store would duplicate all of that and need its own cross-checks.
+- **Definition**: `chanakya/contracts/agent_turn.py` (`ContextManifest`,
+  `ContextEntry`, `ProviderIdentity`, `TurnOutcomeRecord`,
+  `AgentTurnOutcome`), versioned by the `AuditEvent` `contract_version`
+  (`1.1.0`) and by `INSTRUCTIONS_TEMPLATE_VERSION`.
+
+**Ordering.** `agent_turn_requested` is durable *before* the provider is
+called (a failed write means no call). Exactly one of `agent_turn_received`
+/ `agent_turn_rejected` is durable *before* any accepted output is used (a
+failed write halts the investigation). A provider exception is recorded as
+`agent_turn_rejected` with outcome `provider_failure`.
+
+**`agent_turn_requested` details (context manifest)**
+
+| Field | Type | Description |
+|---|---|---|
+| `turn_id` | string | Deterministic: UUIDv5 of `investigation_id` and `turn_sequence` |
+| `turn_sequence` | integer ≥ 1 | Contiguous per investigation |
+| `template_version` | string | Instruction template, `chanakya-agent-instructions/1` |
+| `instructions_hash` | hash | Of the exact system/instruction text |
+| `objective_hash` | hash | Of the objective (the text itself is already in `investigation_started`) |
+| `capability_catalog_hash` | hash | Of the catalog offered to the model |
+| `target_context_hash` / `environment_context_hash` | hash or null | Of the model-visible views; null when absent |
+| `context_entries` | array (≤ 5) | Ordered: `position`, `source` (`tool_result:<id>`), `source_kind` (`evidence` or `tool_result_error`), `tool_result_id`, `step_id`, `evidence_id` (evidence only), `content_hash` |
+| `provider` | object | `provider`, `model`, `endpoint`, `config_version`, `timeout_seconds`, `max_tokens`, `declared` |
+| `provider_request_hash` | hash | Canonical hash of the exact request structure sent (declared providers), or of the assembled context handed to an in-process provider |
+
+**`agent_turn_received` / `agent_turn_rejected` details (outcome)**
+
+| Field | Type | Description |
+|---|---|---|
+| `turn_id`, `turn_sequence` | | Must match the manifest |
+| `outcome` | enum | Accepted: `tool_request`, `conclusion`, `findings`. Rejected: `malformed_turn`, `malformed_tool_request`, `reserved_channel_misuse`, `multiple_tool_use_blocks`, `unsupported_stop_reason`, `invalid_findings`, `provider_output_too_large`, `provider_failure` |
+| `accepted` | bool | True exactly for the accepted outcomes; equals the event type |
+| `provider_request_hash` | hash | Repeats the manifest's (Review compares them) |
+| `raw_output_hash` | hash or null | Of the raw provider output (null only on provider failure). Raw output is never stored |
+| `stop_reason`, `tool_use_blocks` | | As reported by a declared provider; null for in-process providers |
+| `proposed_capability`, `tool_request_hash` | | For tool proposals (capability text is bounded and credential-screened) |
+| `findings_count` | integer | Findings in a conclude turn |
+| `explanation_status` | enum | `absent`, `recorded`, `withheld_too_long`, `withheld_unsafe_text`, `withheld_credential_shaped` |
+| `explanation` | string or null | Only when `recorded`: ≤ 2000 characters, no control characters, not credential-shaped |
+| `explanation_hash` | hash or null | Always present when an explanation existed, recorded or withheld |
+| `error_type` | string or null | Exception class name on `provider_failure`; never the message |
+
+**Validation requirements**
+- Closed key sets; hashes are `sha256:<64 hex>`; every text fact is
+  bounded and credential-screened (Phase 12 helpers). A fact that cannot be
+  recorded safely fails the write (the investigation halts) rather than
+  being truncated or rewritten. The explanation alone is *withheld* (hash
+  plus status) instead of failing, because the Runtime never uses it.
+- Context entries are references plus hashes. Evidence payloads are never
+  copied into turn records.
+- Provider identity for a declared provider requires an `https://`
+  endpoint, a model, a configuration version, a timeout and `max_tokens`.
+  An in-process provider is recorded as `undeclared` with no endpoint. The
+  CLI composition root only uses a declared provider.
+
+**Security considerations**
+- Never contains the API key, `Authorization`/`x-api-key` headers, custom
+  headers, raw environment values or raw model output.
+- Carries no authority and is never an input to policy, approval,
+  dispatch or risk (CT-INV-5, AST-tested).
 
 ---
 

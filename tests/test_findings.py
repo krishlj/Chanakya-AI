@@ -459,8 +459,25 @@ def test_foreign_investigation_tool_results_do_not_resolve(
     )
     foreign_id = first_a.tool_result.tool_result_id
     agent_b = Script(b.investigation_id, lambda ids: [finding_dict([foreign_id])], proposals=0)
-    result = controller.run_turn(b.investigation_id, agent_b, recent_tool_results=[first_a.tool_result])
+    # Citing A's result id from B does not resolve (Phase 9).
+    result = controller.run_turn(b.investigation_id, agent_b)
     assert result.outcome == TurnOutcome.MALFORMED_TURN
+    assert store.list_by_investigation(b.investigation_id) == ()
+    # Phase 14 (CT-INV-2): handing A's result to B's turn is refused outright,
+    # before B's provider is called, instead of being placed in B's context.
+    class Counting:
+        def __init__(self, inner):
+            self.inner, self.calls = inner, 0
+
+        def next_turn(self, assembled):
+            self.calls += 1
+            return self.inner.next_turn(assembled)
+
+    counting = Counting(agent_b)
+    result = controller.run_turn(b.investigation_id, counting, recent_tool_results=[first_a.tool_result])
+    assert result.outcome == TurnOutcome.FAILED
+    assert b.error_state["reason"] == "context_source_rejected"
+    assert counting.calls == 0  # B's provider never saw A's result
     assert store.list_by_investigation(b.investigation_id) == ()
 
 

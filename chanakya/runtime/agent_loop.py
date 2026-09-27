@@ -30,9 +30,27 @@ import uuid
 from dataclasses import dataclass
 from enum import Enum
 from types import MappingProxyType
-from typing import Any, Callable, Mapping, Optional, Protocol, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Protocol, Sequence, Tuple
 
 from chanakya.capability.envelope import is_envelope_violation
+from chanakya.contracts.agent_turn import (
+    ACCEPTED_OUTCOMES,
+    ACCEPTED_STOP_REASONS,
+    MAX_CONTEXT_ENTRIES,
+    SOURCE_KIND_EVIDENCE,
+    SOURCE_KIND_TOOL_RESULT_ERROR,
+    UNDECLARED_PROVIDER,
+    AgentTurnOutcome,
+    ContextEntry,
+    ContextManifest,
+    PreparedProviderRequest,
+    ProviderIdentity,
+    ProviderResponse,
+    TurnOutcomeRecord,
+    derive_agent_turn_id,
+    hash_json_normalized,
+    hash_value,
+)
 from chanakya.contracts.approval import (
     ApprovalDecision,
     ApprovalDecisionValue,
@@ -78,6 +96,8 @@ from .dispatch import DispatchInstruction, ToolExecutor, dispatch
 from .evidence import EvidenceRecorder, StubEvidenceRecorder
 from .exceptions import (
     AuditSinkError,
+    ContextSourceError,
+    ProviderContractError,
     DispatchPreconditionError,
     EnvironmentContextScopeError,
     InvestigationTerminatedError,
@@ -161,11 +181,57 @@ def _verify_environment_context_binding(
             )
 
 
+class _ProviderTurn:
+    """Phase 14: one provider call in flight (Runtime-internal)."""
+
+    def __init__(self, *, turn_id: str, sequence: int, request_hash: str) -> None:
+        self.turn_id = turn_id
+        self.sequence = sequence
+        self.request_hash = request_hash
+        self.received = False
+        self.raw_turn: Any = None
+        self.stop_reason: Optional[str] = None
+        self.tool_use_blocks: Optional[int] = None
+
+
+def _verify_context_data(assembled: AssembledContext, sources: Sequence["_ContextSource"]) -> None:
+    """Phase 14 (CT-INV-2): the assembled untrusted data must be exactly the
+    Runtime-owned sources, in order: nothing added, dropped or altered."""
+    expected = tuple((f"tool_result:{s.tool_result.tool_result_id}", s.content) for s in sources)
+    actual = tuple((entry.source, entry.content) for entry in assembled.data)
+    if actual != expected:
+        raise ContextSourceError("assembled context data differs from the Runtime-owned context sources")
+
+
 class AgentProvider(Protocol):
-    """Not implemented in this phase (no LLM provider)."""
+    """The model boundary. ``next_turn`` is the minimal shape (in-process
+    doubles). Phase 14: a *declared* provider (``AnthropicProvider``) also
+    implements ``provider_identity() -> ProviderIdentity``,
+    ``prepare_turn(assembled) -> PreparedProviderRequest`` and
+    ``send_turn(prepared) -> ProviderResponse``; the Runtime then records
+    the exact request hash and identity before anything is sent. A provider
+    without them is recorded as ``UNDECLARED_PROVIDER`` with the hash of
+    the assembled context it was handed."""
 
     def next_turn(self, assembled_context: AssembledContext) -> Mapping[str, Any]:
         ...
+
+
+@dataclass(frozen=True)
+class _ContextSource:
+    """Phase 14: one tool result this Runtime produced for an investigation
+    and may place in that investigation's model context (CT-INV-2)."""
+
+    tool_result: ToolResult
+    step_id: str
+    evidence_id: Optional[str]
+    source_kind: str
+    content: Any
+    content_hash: str
+
+
+def _is_declared_provider(agent: Any) -> bool:
+    return all(callable(getattr(agent, name, None)) for name in ("provider_identity", "prepare_turn", "send_turn"))
 
 
 class PolicyEvaluator(Protocol):
@@ -389,6 +455,13 @@ class AgentLoopController:
         self._risk_rule_set = risk_rule_set
         self._clock = clock
         self._sleep = sleep
+        # Phase 14 (CT-INV-2): the Runtime-owned record of the tool results
+        # each investigation produced, the only source of model-context data,
+        # and each investigation's turn counter. In memory, like the rest of
+        # live Runtime state; never conversation memory (no model output is
+        # kept or replayed).
+        self._context_sources: Dict[str, List[_ContextSource]] = {}
+        self._turn_sequences: Dict[str, int] = {}
 
     # -- public entry point ----------------------------------------------
 
@@ -400,6 +473,13 @@ class AgentLoopController:
         capability_catalog: Sequence[Mapping[str, Any]] = (),
         recent_tool_results: Sequence[ToolResult] = (),
     ) -> TurnResult:
+        """Phase 14: the Runtime composes model context itself from the tool
+        results this investigation produced (the last
+        ``MAX_CONTEXT_ENTRIES``). ``recent_tool_results`` is kept only for
+        compatibility and selects nothing: every entry must be one of those
+        Runtime-owned results, unaltered and not duplicated, or the
+        investigation fails closed (``context_source_rejected``) before the
+        provider is called."""
         context = self._investigations.get(investigation_id)
         if context.is_terminal:
             raise InvestigationTerminatedError(
@@ -422,7 +502,9 @@ class AgentLoopController:
             )
 
         try:
-            return self._run_turn_body(investigation_id, context, agent, capability_catalog, recent_tool_results)
+            result = self._run_turn_body(investigation_id, context, agent, capability_catalog, recent_tool_results)
+            self._remember_context_source(investigation_id, result)
+            return result
         except Exception as exc:  # Runtime fail-closed backstop — §11/§7.H.
             # Any unexpected internal error (a buggy PolicyEvaluator or
             # ApprovalProvider that raises instead of returning, a
@@ -481,6 +563,16 @@ class AgentLoopController:
             )
             return TurnResult(outcome=TurnOutcome.HALTED, detail=str(exc))
 
+        # Phase 14 (CT-INV-2): model-context data comes only from the tool
+        # results this Runtime produced for this investigation. A caller may
+        # not add, alter, repeat or resurrect one; any attempt fails the
+        # investigation before the provider is reached.
+        sources = self._context_window(investigation_id)
+        try:
+            self._check_caller_results(sources, recent_tool_results)
+        except ContextSourceError as exc:
+            return self._reject_context_sources(investigation_id, exc)
+
         # Phase 5.7.3 (TC-INV-3): target context is derived ONLY from this
         # investigation's own target_refs, freshly each turn (no cache), and
         # the assembler re-verifies scope. Any failure to build it — an
@@ -529,7 +621,7 @@ class AgentLoopController:
             assembled = self._context_assembler.assemble(
                 context,
                 capability_catalog=capability_catalog,
-                recent_tool_results=recent_tool_results,
+                recent_tool_results=tuple(source.tool_result for source in sources),
                 **assemble_kwargs,
             )
             if target_contexts is not None and tuple(assembled.target_context) != target_contexts:
@@ -541,6 +633,11 @@ class AgentLoopController:
                     "assembled environment context differs from the investigation-scoped environment context"
                 )
             _verify_environment_context_binding(context, assembled.environment_context)
+            # Phase 14: whatever assembler ran, the data it carries must be
+            # exactly the Runtime-owned sources, in order.
+            _verify_context_data(assembled, sources)
+        except ContextSourceError as exc:
+            return self._reject_context_sources(investigation_id, exc)
         except (UnregisteredTargetError, TargetContextProjectionError, TargetContextScopeError) as exc:
             self._investigations.fail(
                 investigation_id,
@@ -588,7 +685,11 @@ class AgentLoopController:
             )
             return TurnResult(outcome=TurnOutcome.HALTED, detail=str(exc))
 
-        raw_turn = agent.next_turn(assembled)
+        # Phase 14 (CT-INV-1): the manifest is durable before the provider is
+        # called, and exactly one outcome is durable before any output is
+        # used. A failed write raises AuditSinkError and the backstop halts.
+        turn = self._call_provider(investigation_id, context, agent, assembled, sources, measured)
+        raw_turn = turn.raw_turn
 
         # Phase 5.5 (RG-INV-2): reject an oversized raw provider return
         # value BEFORE it is parsed into AgentTurnOutput — never
@@ -597,19 +698,38 @@ class AgentLoopController:
         try:
             self._governor.check_provider_output_size(output_size)
         except ResourceLimitExceededError as exc:
+            self._record_outcome(investigation_id, turn, AgentTurnOutcome.PROVIDER_OUTPUT_TOO_LARGE)
             self._investigations.halt(
                 investigation_id, reason="max_provider_output_bytes_exceeded", details={"detail": str(exc)}
             )
             return TurnResult(outcome=TurnOutcome.HALTED, detail=str(exc))
 
-        try:
-            turn_output = AgentTurnOutput.from_dict(raw_turn)
-        except MalformedAgentTurnOutputError as exc:
-            return TurnResult(outcome=TurnOutcome.MALFORMED_TURN, detail=str(exc))
+        outcome, turn_output, built_findings, capability, detail = self._classify_turn(investigation_id, context, turn)
+        self._record_outcome(
+            investigation_id,
+            turn,
+            outcome,
+            proposed_capability=capability,
+            tool_request_hash=(
+                hash_json_normalized(turn_output.tool_request)
+                if turn_output is not None and turn_output.tool_request is not None
+                else None
+            ),
+            findings_count=len(turn_output.findings) if turn_output is not None else 0,
+        )
+
+        if outcome == AgentTurnOutcome.MALFORMED_TOOL_REQUEST:
+            # Recorded as rejected. The existing path consumes a step and
+            # fails it as MALFORMED_REQUEST without reaching the Gateway.
+            return self._handle_tool_request_turn(investigation_id, context, turn_output)
+        if outcome not in ACCEPTED_OUTCOMES:
+            return self._rejected_turn(investigation_id, detail)
 
         if turn_output.next_action == NextAction.CONCLUDE:
             if turn_output.findings:
-                ended, stored = self._record_findings(investigation_id, context, turn_output.findings)
+                ended, stored = self._record_findings(
+                    investigation_id, context, turn_output.findings, built=built_findings
+                )
                 if ended is not None:
                     return ended
                 if self._risk_assessor is not None:
@@ -621,10 +741,228 @@ class AgentLoopController:
 
         return self._handle_tool_request_turn(investigation_id, context, turn_output)
 
+    # -- Phase 14: Runtime-owned context and forensic turn records ----------
+
+    def _context_window(self, investigation_id: str) -> Tuple[_ContextSource, ...]:
+        return tuple(self._context_sources.get(investigation_id, ())[-MAX_CONTEXT_ENTRIES:])
+
+    def _remember_context_source(self, investigation_id: str, result: TurnResult) -> None:
+        """Keeps the final tool result of a step this Runtime ran (the result
+        the CLI used to pass back) as a future context source. Only a SUCCESS
+        with recorded Evidence, or a failed/timed-out result (audited as
+        ``dispatch_failed``), qualifies."""
+        tool_result, step = result.tool_result, result.step_record
+        if tool_result is None or step is None:
+            return
+        if result.outcome == TurnOutcome.STEP_COMPLETED and step.evidence_id:
+            kind, evidence_id, content = SOURCE_KIND_EVIDENCE, step.evidence_id, tool_result.output
+        elif result.outcome in (TurnOutcome.STEP_FAILED, TurnOutcome.STEP_TIMED_OUT):
+            kind, evidence_id, content = SOURCE_KIND_TOOL_RESULT_ERROR, None, tool_result.error_message
+        else:
+            return
+        content_hash = hash_json_normalized(content)
+        if content_hash is None:
+            return  # unserializable content never becomes model context
+        self._context_sources.setdefault(investigation_id, []).append(
+            _ContextSource(tool_result, step.step_id, evidence_id, kind, content, content_hash)
+        )
+
+    @staticmethod
+    def _check_caller_results(sources: Tuple[_ContextSource, ...], supplied: Sequence[Any]) -> None:
+        by_id = {source.tool_result.tool_result_id: source for source in sources}
+        seen = set()
+        for result in supplied:
+            if not isinstance(result, ToolResult):
+                raise ContextSourceError("a supplied context result is not a ToolResult")
+            source = by_id.get(result.tool_result_id)
+            if source is None:
+                raise ContextSourceError(
+                    "a supplied tool result was not produced by this investigation's recent steps "
+                    "(foreign, unknown or stale)"
+                )
+            if result.tool_result_id in seen:
+                raise ContextSourceError("a supplied tool result is duplicated")
+            if result != source.tool_result:
+                raise ContextSourceError("a supplied tool result differs from the one this investigation recorded")
+            seen.add(result.tool_result_id)
+
+    def _reject_context_sources(self, investigation_id: str, exc: ContextSourceError) -> TurnResult:
+        self._investigations.fail(investigation_id, reason="context_source_rejected", details={"detail": str(exc)})
+        return TurnResult(outcome=TurnOutcome.FAILED, detail=str(exc))
+
+    def _call_provider(
+        self,
+        investigation_id: str,
+        context: InvestigationContext,
+        agent: AgentProvider,
+        assembled: AssembledContext,
+        sources: Tuple[_ContextSource, ...],
+        measured: Mapping[str, Any],
+    ) -> _ProviderTurn:
+        sequence = self._turn_sequences.get(investigation_id, 0) + 1
+        turn_id = derive_agent_turn_id(investigation_id, sequence)
+        declared = _is_declared_provider(agent)
+        prepared = None
+        if declared:
+            identity = agent.provider_identity()
+            if not isinstance(identity, ProviderIdentity) or not identity.declared:
+                raise ProviderContractError("a declared provider must return a declared ProviderIdentity")
+            prepared = agent.prepare_turn(assembled)
+            if not isinstance(prepared, PreparedProviderRequest) or prepared.investigation_id != investigation_id:
+                raise ProviderContractError("provider prepared a request of the wrong shape or investigation")
+            request_hash = prepared.request_hash
+        else:
+            # An in-process provider is handed the assembled context itself;
+            # that is the request, so that is what is hashed.
+            identity = UNDECLARED_PROVIDER
+            request_hash = hash_json_normalized({"investigation_id": investigation_id, **measured})
+            if request_hash is None:
+                raise AuditSinkError("audit fact rejected: FACT_NOT_SERIALIZABLE (provider_request_hash)")
+        manifest = ContextManifest(
+            turn_id=turn_id,
+            turn_sequence=sequence,
+            instructions_hash=hash_value(assembled.instructions),
+            objective_hash=hash_value(context.objective),
+            capability_catalog_hash=hash_json_normalized(list(assembled.capability_catalog)) or "",
+            target_context_hash=(
+                hash_json_normalized([view.as_model_mapping() for view in assembled.target_context])
+                if assembled.target_context
+                else None
+            ),
+            environment_context_hash=(
+                hash_json_normalized([view.as_model_mapping() for view in assembled.environment_context])
+                if assembled.environment_context
+                else None
+            ),
+            entries=tuple(
+                ContextEntry(
+                    position=position,
+                    source=f"tool_result:{source.tool_result.tool_result_id}",
+                    source_kind=source.source_kind,
+                    tool_result_id=source.tool_result.tool_result_id,
+                    step_id=source.step_id,
+                    evidence_id=source.evidence_id,
+                    content_hash=source.content_hash,
+                )
+                for position, source in enumerate(sources)
+            ),
+            provider=identity,
+            provider_request_hash=request_hash,
+        )
+        self._audit.agent_turn_requested(investigation_id, manifest)
+        self._turn_sequences[investigation_id] = sequence
+        turn = _ProviderTurn(turn_id=turn_id, sequence=sequence, request_hash=request_hash)
+        try:
+            if declared:
+                response = agent.send_turn(prepared)
+                if not isinstance(response, ProviderResponse):
+                    raise ProviderContractError("provider returned a response of the wrong shape")
+                turn.raw_turn = response.turn
+                turn.stop_reason = response.stop_reason
+                turn.tool_use_blocks = response.tool_use_blocks
+            else:
+                turn.raw_turn = agent.next_turn(assembled)
+        except Exception as exc:
+            # The provider produced nothing usable: record that, then let the
+            # existing backstop fail the investigation (LLM-INV-9).
+            self._record_outcome(
+                investigation_id, turn, AgentTurnOutcome.PROVIDER_FAILURE, error_type=type(exc).__name__
+            )
+            raise
+        turn.received = True
+        return turn
+
+    def _classify_turn(self, investigation_id: str, context: InvestigationContext, turn: _ProviderTurn):
+        """Decides, before anything is used, whether the Runtime accepts this
+        output. Returns ``(outcome, turn_output, built_findings,
+        proposed_capability, detail)``. Stores nothing."""
+        if turn.tool_use_blocks is not None and turn.tool_use_blocks > 1:
+            return AgentTurnOutcome.MULTIPLE_TOOL_USE_BLOCKS, None, None, None, (
+                f"provider returned {turn.tool_use_blocks} tool_use blocks; exactly one action per turn is accepted"
+            )
+        if turn.stop_reason is not None and turn.stop_reason not in ACCEPTED_STOP_REASONS:
+            return AgentTurnOutcome.UNSUPPORTED_STOP_REASON, None, None, None, (
+                "provider output stopped for an unsupported reason; nothing from it is used"
+            )
+        try:
+            turn_output = AgentTurnOutput.from_dict(turn.raw_turn)
+        except MalformedAgentTurnOutputError as exc:
+            raw_action = turn.raw_turn.get("next_action") if isinstance(turn.raw_turn, Mapping) else None
+            outcome = (
+                AgentTurnOutcome.RESERVED_CHANNEL_MISUSE
+                if raw_action == "invalid_reserved_tool_use"
+                else AgentTurnOutcome.MALFORMED_TURN
+            )
+            return outcome, None, None, None, str(exc)
+        if turn_output.next_action == NextAction.CONCLUDE:
+            if not turn_output.findings:
+                return AgentTurnOutcome.CONCLUSION, turn_output, None, None, None
+            if self._finding_recorder is None:
+                # Accepted as reported; storage then fails closed
+                # (finding_store_unavailable), exactly as before Phase 14.
+                return AgentTurnOutcome.FINDINGS, turn_output, None, None, None
+            try:
+                built = self._build_findings(investigation_id, context, turn_output.findings)
+            except FindingValidationError as exc:
+                return AgentTurnOutcome.INVALID_FINDINGS, turn_output, None, None, str(exc)
+            return AgentTurnOutcome.FINDINGS, turn_output, built, None, None
+        try:
+            request = ToolRequestIntake.intake(dict(turn_output.tool_request or {}))
+        except MalformedRequestError as exc:
+            return AgentTurnOutcome.MALFORMED_TOOL_REQUEST, turn_output, None, None, str(exc)
+        return AgentTurnOutcome.TOOL_REQUEST, turn_output, None, request.capability, None
+
+    def _record_outcome(
+        self,
+        investigation_id: str,
+        turn: _ProviderTurn,
+        outcome: AgentTurnOutcome,
+        *,
+        proposed_capability: Optional[str] = None,
+        tool_request_hash: Optional[str] = None,
+        findings_count: int = 0,
+        error_type: Optional[str] = None,
+    ) -> None:
+        raw = turn.raw_turn
+        self._audit.agent_turn_outcome(
+            investigation_id,
+            TurnOutcomeRecord(
+                turn_id=turn.turn_id,
+                turn_sequence=turn.sequence,
+                outcome=outcome,
+                provider_request_hash=turn.request_hash,
+                raw_output_hash=hash_json_normalized(raw) if turn.received else None,
+                stop_reason=turn.stop_reason,
+                tool_use_blocks=turn.tool_use_blocks,
+                proposed_capability=proposed_capability,
+                tool_request_hash=tool_request_hash,
+                findings_count=findings_count,
+                explanation=raw.get("explanation") if isinstance(raw, Mapping) else None,
+                error_type=error_type,
+            ),
+        )
+
+    def _rejected_turn(self, investigation_id: str, detail: Optional[str]) -> TurnResult:
+        """A rejected model turn consumes a step of the investigation's
+        budget, so a flood of malformed output halts instead of looping."""
+        try:
+            self._governor.record_step_proposed(investigation_id)
+        except ResourceLimitExceededError as exc:
+            self._investigations.halt(
+                investigation_id, reason="max_steps_per_investigation_exceeded", details={"detail": str(exc)}
+            )
+            return TurnResult(outcome=TurnOutcome.HALTED, detail=str(exc))
+        return TurnResult(outcome=TurnOutcome.MALFORMED_TURN, detail=detail)
+
     # -- Phase 9: evidence-grounded findings (conclude turns only) ---------
 
     def _record_findings(
-        self, investigation_id: str, context: InvestigationContext, raw_findings: Sequence[Mapping[str, Any]]
+        self,
+        investigation_id: str,
+        context: InvestigationContext,
+        raw_findings: Sequence[Mapping[str, Any]],
+        *,
+        built: Optional[Tuple[Finding, ...]] = None,
     ) -> Tuple[Optional[TurnResult], Tuple[Finding, ...]]:
         """Validates every proposed finding and resolves its evidence
         references before storing any of them. Returns ``(None, stored)``
@@ -643,11 +981,9 @@ class AgentLoopController:
                 TurnResult(outcome=TurnOutcome.FAILED, detail="findings reported but no finding store is configured"),
                 (),
             )
-        try:
-            findings = self._build_findings(investigation_id, context, raw_findings)
-        except FindingValidationError as exc:
-            # Model-caused: nothing stored, investigation keeps running.
-            return TurnResult(outcome=TurnOutcome.MALFORMED_TURN, detail=str(exc)), ()
+        # Phase 14: the batch was validated (a rejection is recorded durably)
+        # before the turn was accepted; ``built`` is that validated batch.
+        findings = built if built is not None else self._build_findings(investigation_id, context, raw_findings)
 
         for finding in findings:
             try:

@@ -74,7 +74,7 @@ from chanakya.targets.registry import TargetRegistry
 from chanakya.tools.handlers.local_host_environment import CAPABILITY_ID
 
 from factories import make_entry
-from runtime_factories import SpyPolicyEvaluator
+from runtime_factories import SpyPolicyEvaluator, output_executor, seed_tool_output_step
 from test_anthropic_provider import (
     RecordingTransport,
     _assembled_context,
@@ -304,16 +304,34 @@ def test_request_body_exact_shape_with_required_default_config():
 
 
 def test_request_body_with_all_optional_config_values():
-    provider, transport = _provider(max_output_tokens=321, temperature=0.25, endpoint="https://gateway.example.test")
+    transport = RecordingTransport(_conclude_response())
+    client = anthropic.Anthropic(
+        api_key=SENTINEL_KEY,
+        base_url="https://gateway.example.test",
+        http_client=httpx2.Client(transport=httpx2.MockTransport(transport.handler)),
+        max_retries=0,
+    )
+    config = _config(max_output_tokens=321, temperature=0.25, endpoint="https://gateway.example.test")
+    provider = AnthropicProvider(config, SENTINEL_KEY, client=client)
     provider.next_turn(_assembled_context(capability_catalog=[_catalog_entry()]))
 
     body = transport.last_request_body
     assert set(body) == {"model", "system", "messages", "max_tokens", "tools", "temperature"}
     assert body["max_tokens"] == 321
     assert body["temperature"] == 0.25
-    # endpoint is client-construction-only: an injected client keeps its own
-    # base URL, and the endpoint never enters the body.
+    # endpoint is client-construction-only: it never enters the body.
     assert "gateway.example.test" not in transport.requests[-1].content.decode()
+    assert transport.requests[-1].url.host == "gateway.example.test"
+
+
+def test_injected_client_for_another_endpoint_is_refused():
+    """Phase 14 (T-59): a real SDK client must target exactly the configured
+    endpoint, or the provider refuses to exist; the recorded endpoint can
+    therefore never differ from the one requests go to."""
+    transport = RecordingTransport(_conclude_response())
+    with pytest.raises(ValueError, match="configured endpoint"):
+        AnthropicProvider(_config(endpoint="https://gateway.example.test"), SENTINEL_KEY, client=_mock_client(transport))
+    assert transport.requests == []
 
 
 def test_request_body_omits_tools_when_catalog_empty():
@@ -368,21 +386,15 @@ def test_runtime_assembled_context_keeps_tool_output_out_of_system(
     """End-to-end through the real ContextAssembler (not a hand-built
     AssembledContext): the system field is exactly the Runtime-authored
     instructions and contains none of the tool output."""
-    malicious = ToolResult(
-        tool_result_id="res-566-sys",
-        contract_version="1.0.0",
-        tool_request_id="tr-566-sys",
-        capability=CAPABILITY_ID,
-        status=ToolResultStatus.SUCCESS,
-        started_at="2026-01-01T00:00:00Z",
-        completed_at="2026-01-01T00:00:01Z",
-        output={"banner": _INJECTION, "role": "system"},
-    )
     provider, transport = _provider()
     spy_gateway = SpyPolicyEvaluator(gateway)
-    controller = _controller(investigation_manager, resource_governor, spy_gateway, tool_executor, evidence_recorder=evidence_recorder)
+    executor = output_executor({"banner": _INJECTION, "role": "system"})
+    controller = _controller(investigation_manager, resource_governor, spy_gateway, executor, evidence_recorder=evidence_recorder)
+    # Phase 14: the tool output comes from a real, earlier step.
+    seed_tool_output_step(controller, started_investigation.investigation_id, capability=CAPABILITY_ID)
+    spy_gateway.calls.clear()
 
-    result = controller.run_turn(started_investigation.investigation_id, provider, recent_tool_results=[malicious])
+    result = controller.run_turn(started_investigation.investigation_id, provider)
 
     body = transport.last_request_body
     assert body["system"].startswith("Investigation objective:")
@@ -769,37 +781,44 @@ def test_investigation_data_cannot_control_the_endpoint(provider_built_transport
     assert [r.url.host for r in provider_built_transport.requests] == ["api.anthropic.com"]
 
 
-def test_explicit_endpoint_overrides_anthropic_base_url_env(provider_built_transport, monkeypatch):
+def test_explicit_endpoint_is_used_and_anthropic_base_url_env_is_never_consulted(provider_built_transport, monkeypatch):
+    """Phase 14 (T-59): the provider always passes an explicit base_url, so
+    even a provider built outside the CLI (which refuses the variable) never
+    lets ANTHROPIC_BASE_URL choose the destination."""
     monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://env-override.example.test")
     provider = AnthropicProvider(_config(endpoint="https://configured.example.test"), SENTINEL_KEY)
     provider.next_turn(_assembled_context())
     assert provider_built_transport.requests[-1].url.host == "configured.example.test"
 
 
-def test_documented_finding_endpoint_none_defers_to_anthropic_base_url_env(provider_built_transport, monkeypatch):
-    """DOCUMENTED FINDING (not a data-controlled bypass): with
-    ``ProviderConfig.endpoint=None`` the SDK consults the process
-    environment's ``ANTHROPIC_BASE_URL`` before its hard-coded default —
-    so the effective endpoint (and the host receiving ``x-api-key``) is
-    operator/environment-controlled, not solely ProviderConfig-controlled."""
+def test_endpoint_none_uses_the_trusted_default_not_anthropic_base_url_env(provider_built_transport, monkeypatch):
+    """Phase 14 (T-59), formerly a documented finding: ``endpoint=None``
+    means ``DEFAULT_ANTHROPIC_ENDPOINT``; ANTHROPIC_BASE_URL cannot redirect
+    the request or the ``x-api-key`` header."""
     monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://env-override.example.test")
     provider = AnthropicProvider(_config(), SENTINEL_KEY)
     provider.next_turn(_assembled_context())
     request = provider_built_transport.requests[-1]
-    assert request.url.host == "env-override.example.test"
-    assert "x-api-key" in request.headers
+    assert request.url.host == "api.anthropic.com"
+    assert provider.provider_identity().endpoint == "https://api.anthropic.com"
+    assert all(r.url.host != "env-override.example.test" for r in provider_built_transport.requests)
 
 
-def test_documented_finding_http_endpoint_is_accepted_and_sends_credential_in_cleartext(provider_built_transport):
-    """DOCUMENTED FINDING: ProviderConfig's scheme check (Phase 5.6.1,
-    intentionally minimal) accepts ``http://``; the SDK then sends the
-    ``x-api-key`` header over an unencrypted connection. Current behavior
-    recorded here; see the Phase 5.6.6 report."""
-    provider = AnthropicProvider(_config(endpoint="http://plaintext-proxy.example.test"), SENTINEL_KEY)
-    provider.next_turn(_assembled_context())
-    request = provider_built_transport.requests[-1]
-    assert request.url.scheme == "http"
-    assert "x-api-key" in request.headers
+def test_anthropic_custom_headers_env_fails_closed(provider_built_transport, monkeypatch):
+    """Phase 14 (T-59): ANTHROPIC_CUSTOM_HEADERS would add arbitrary headers
+    to every request; a provider built while it is set refuses to exist."""
+    monkeypatch.setenv("ANTHROPIC_CUSTOM_HEADERS", "X-Forward-To: evil.example.test")
+    with pytest.raises(ValueError, match="custom headers"):
+        AnthropicProvider(_config(), SENTINEL_KEY)
+    assert provider_built_transport.requests == []
+
+
+def test_http_endpoint_is_rejected_so_the_credential_never_goes_cleartext(provider_built_transport):
+    """Phase 14 (T-59), formerly a documented finding: ``http://`` endpoints
+    are refused by ProviderConfig, before any client or request exists."""
+    with pytest.raises(ValueError, match="https"):
+        _config(endpoint="http://plaintext-proxy.example.test")
+    assert provider_built_transport.requests == []
 
 
 def test_timeout_seconds_reaches_the_actual_outbound_request(provider_built_transport):
@@ -1147,7 +1166,7 @@ def test_multiple_tool_use_blocks_map_only_the_first():
     assert isinstance(turn["tool_request"], dict)  # one request, not a list
 
 
-def test_multiple_tool_use_blocks_reach_the_gateway_once_and_execute_at_most_once(
+def test_multiple_tool_use_blocks_are_rejected_and_never_reach_the_gateway(
     investigation_manager, resource_governor, gateway, tool_executor, evidence_recorder, started_investigation
 ):
     provider, transport = _provider(
@@ -1162,12 +1181,14 @@ def test_multiple_tool_use_blocks_reach_the_gateway_once_and_execute_at_most_onc
 
     result = controller.run_turn(started_investigation.investigation_id, provider)
 
+    # Phase 14: a turn carrying two actions is rejected as a whole (recorded
+    # as multiple_tool_use_blocks), instead of silently running the first.
     assert len(transport.requests) == 1
-    assert result.outcome == TurnOutcome.STEP_COMPLETED
-    assert spy_gateway.call_count == 1
-    assert [call.capability for call in spy_executor.calls] == [CAPABILITY_ID]
-    assert len(started_investigation.evidence_refs) == 1
-    assert started_investigation.status == InvestigationStatus.RUNNING  # second (state-changing) tool never became an approval
+    assert result.outcome == TurnOutcome.MALFORMED_TURN
+    assert spy_gateway.call_count == 0
+    assert spy_executor.calls == []
+    assert started_investigation.evidence_refs == ()
+    assert started_investigation.status == InvestigationStatus.RUNNING  # neither tool became an approval
 
 
 # ===========================================================================
@@ -1474,23 +1495,20 @@ def test_redirect_fails_closed_through_the_runtime(
     provider = AnthropicProvider(_config(), SENTINEL_KEY)
     wrapper = RecordingProviderWrapper(provider)
     spy_gateway = SpyPolicyEvaluator(gateway)
-    spy_executor = SpyToolExecutor(tool_executor)
+    spy_executor = SpyToolExecutor(output_executor({"marker": _REDIRECT_MARKER}))
     sink = InMemoryAuditSink()
     controller = _controller(
         investigation_manager, resource_governor, spy_gateway, spy_executor, evidence_recorder=evidence_recorder, audit=AuditEmitter(sink)
     )
-    malicious = ToolResult(
-        tool_result_id="res-566-redirect",
-        contract_version="1.0.0",
-        tool_request_id="tr-566-redirect",
-        capability=CAPABILITY_ID,
-        status=ToolResultStatus.SUCCESS,
-        started_at="2026-01-01T00:00:00Z",
-        completed_at="2026-01-01T00:00:01Z",
-        output={"marker": _REDIRECT_MARKER},
-    )
+    # Phase 14: the marker is the output of a real, earlier step; only what
+    # happens from the redirected turn on is examined below.
+    seed_tool_output_step(controller, started_investigation.investigation_id, capability=CAPABILITY_ID)
+    evidence_before = started_investigation.evidence_refs
+    spy_gateway.calls.clear()
+    spy_executor.calls.clear()
+    del sink.events[:]
 
-    result = controller.run_turn(started_investigation.investigation_id, wrapper, recent_tool_results=[malicious])
+    result = controller.run_turn(started_investigation.investigation_id, wrapper)
 
     assert result.outcome == TurnOutcome.FAILED
     assert started_investigation.status == InvestigationStatus.FAILED
@@ -1499,8 +1517,9 @@ def test_redirect_fails_closed_through_the_runtime(
     _assert_single_original_request(provider_built_transport)
     assert spy_gateway.call_count == 0  # no PolicyDecision
     assert spy_executor.calls == []  # no ToolExecutor call
-    assert started_investigation.evidence_refs == ()  # no Evidence
+    assert started_investigation.evidence_refs == evidence_before  # no new Evidence
     event_types = [event.event_type.value for event in sink.events]
+    assert event_types[:2] == ["agent_turn_requested", "agent_turn_rejected"]  # Phase 14: provider failure recorded
     assert "approval_requested" not in event_types  # no ApprovalRequest
     assert "policy_evaluated" not in event_types
     assert "dispatch_started" not in event_types
@@ -1554,31 +1573,26 @@ def _limits(**overrides: Any) -> RuntimeExecutionLimits:
     return RuntimeExecutionLimits(**fields)
 
 
-def _governed_run(target_registry, gateway, tool_executor, limits, provider, **run_kwargs):
+def _governed_run(target_registry, gateway, tool_executor, limits, provider, *, seed_output=None, **run_kwargs):
     from datetime import datetime, timezone
 
     governor = ResourceGovernor(limits, clock=lambda: datetime.now(timezone.utc))
     manager = InvestigationManager(target_registry, governor)
     context = manager.create_investigation(make_investigation_request(["target-local-host-01"], req_id="inv-566-governed"))
     manager.start(context.investigation_id)
-    controller = _controller(manager, governor, gateway, tool_executor)
+    executor = tool_executor if seed_output is None else output_executor(seed_output)
+    controller = _controller(manager, governor, gateway, executor)
+    if seed_output is not None:
+        # Phase 14: large tool output reaches context only from a real step.
+        seed_tool_output_step(controller, context.investigation_id, capability=CAPABILITY_ID)
     return context, controller.run_turn(context.investigation_id, provider, **run_kwargs)
 
 
 def test_oversized_untrusted_data_halts_before_any_sdk_request(target_registry, gateway, tool_executor):
-    big = ToolResult(
-        tool_result_id="res-566-big",
-        contract_version="1.0.0",
-        tool_request_id="tr-566-big",
-        capability=CAPABILITY_ID,
-        status=ToolResultStatus.SUCCESS,
-        started_at="2026-01-01T00:00:00Z",
-        completed_at="2026-01-01T00:00:01Z",
-        output={"blob": "A" * 50_000},
-    )
     provider, transport = _provider()
     context, result = _governed_run(
-        target_registry, gateway, tool_executor, _limits(max_context_bytes=10_000), provider, recent_tool_results=[big]
+        target_registry, gateway, tool_executor, _limits(max_context_bytes=10_000), provider,
+        seed_output={"blob": "A" * 50_000},
     )
     assert result.outcome == TurnOutcome.HALTED
     assert context.status == InvestigationStatus.HALTED

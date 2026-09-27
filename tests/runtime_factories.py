@@ -134,6 +134,31 @@ class FakeToolExecutor:
         return len(self.calls)
 
 
+def output_executor(output: Mapping[str, Any]) -> "FakeToolExecutor":
+    """A ``FakeToolExecutor`` whose every result is SUCCESS with ``output``."""
+    return FakeToolExecutor(lambda i: make_tool_result(i.tool_request_id, i.capability, output=dict(output)))
+
+
+def seed_tool_output_step(
+    controller: Any,
+    investigation_id: str,
+    *,
+    capability: str = "list_listening_ports",
+    target_ref: str = "target-local-host-01",
+) -> Any:
+    """Phase 14 (CT-INV-2): the Runtime composes model context only from tool
+    results the investigation itself produced, so a test that needs specific
+    (e.g. hostile) tool output in a later turn's context runs one real step
+    through intake, the Gateway, dispatch and Evidence. The controller's
+    executor decides the output (see ``output_executor``)."""
+    from chanakya.runtime.agent_loop import TurnOutcome
+
+    agent = ScriptedAgentProvider([make_agent_turn_propose(investigation_id, capability, target_ref)])
+    result = controller.run_turn(investigation_id, agent)
+    assert result.outcome == TurnOutcome.STEP_COMPLETED, result
+    return result
+
+
 class ScriptedAgentProvider:
     """A test double standing in for the AI Agent / LLM Abstraction (not
     implemented in this phase). Returns each payload in ``turns`` in

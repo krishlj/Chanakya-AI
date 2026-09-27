@@ -222,7 +222,7 @@ def build_request_kwargs(assembled_context: AssembledContext, config: ProviderCo
         "model": config.model,
         "system": assembled_context.instructions,
         "messages": [{"role": "user", "content": user_text}],
-        "max_tokens": config.max_output_tokens if config.max_output_tokens is not None else _DEFAULT_MAX_TOKENS,
+        "max_tokens": effective_max_tokens(config),
     }
     if config.temperature is not None:
         # The installed SDK's `Messages.create` (inspected before writing
@@ -245,6 +245,21 @@ def build_request_kwargs(assembled_context: AssembledContext, config: ProviderCo
         kwargs["tools"] = tools
 
     return kwargs
+
+
+def effective_max_tokens(config: ProviderConfig) -> int:
+    """The ``max_tokens`` every request carries (Phase 14: recorded)."""
+    return config.max_output_tokens if config.max_output_tokens is not None else _DEFAULT_MAX_TOKENS
+
+
+def response_metadata(response: Any):
+    """Phase 14: ``(stop_reason, tool_use_block_count)`` of a response, so
+    the Runtime can record them and reject a cut-off or multi-tool turn
+    instead of silently using the first block. Plain values only."""
+    content = list(getattr(response, "content", None) or [])
+    stop_reason = getattr(response, "stop_reason", None)
+    tool_use_blocks = sum(1 for block in content if _block_type(block) == "tool_use")
+    return (stop_reason if isinstance(stop_reason, str) else None), tool_use_blocks
 
 
 def _target_context_section(target_context: Any) -> list:
@@ -453,4 +468,10 @@ def _build_tool_request(tool_use_block: Any, *, investigation_id: str) -> Mappin
     return tool_request
 
 
-__all__ = ["build_request_kwargs", "response_to_turn_mapping", "response_to_turn_mapping_with_findings"]
+__all__ = [
+    "build_request_kwargs",
+    "effective_max_tokens",
+    "response_metadata",
+    "response_to_turn_mapping",
+    "response_to_turn_mapping_with_findings",
+]
