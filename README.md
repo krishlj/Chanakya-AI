@@ -32,9 +32,17 @@ The system will initially support local security analysis and will be designed t
   Registry, and the capability/permission model. See
   `docs/PHASE-2-IMPLEMENTATION.md` for what was built, how it enforces the
   design docs, and its known limitations.
-- **Not yet implemented**: the Agent Runtime, the AI Agent, the LLM
-  Abstraction, MCP integration, real security tools, and any UI (CLI or
-  Web).
+- **Phases 3–15** (`ARCHITECTURE.md` status notes, `docs/AGENT-RUNTIME.md`):
+  the Agent Runtime and a minimal CLI (`python -m chanakya.cli
+  "<objective>"`, with `--review <investigation_id>` for read-only
+  reconstruction); the Anthropic provider; two read-only local-host
+  capabilities; durable, hash-chained Evidence, Findings, RiskAssessments
+  and Audit Log; human approval; deterministic, versioned risk rules;
+  durable agent-turn records (Phase 14); and tool-output credential
+  screening with Registry-declared model egress (Phase 15).
+- **Not yet implemented**: MCP integration, remote targets,
+  state-changing capabilities, recommendations, identity/authentication,
+  persistence/resume, and any Web UI or API.
 
 Run the test suite with:
 ```

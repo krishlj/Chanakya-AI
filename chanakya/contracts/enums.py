@@ -38,6 +38,17 @@ class RiskCategory(str, Enum):
     CRITICAL = "critical"
 
 
+class ModelEgress(str, Enum):
+    """Phase 15: whether a capability's verified output may leave the host
+    as model context. Declared by the administrator in the Registry and
+    carried in the CapabilityEnvelope. A data-flow constraint, never an
+    authorization verdict. There is no default: a missing or unknown value
+    fails closed."""
+
+    ALLOWED = "allowed"
+    EVIDENCE_ONLY = "evidence_only"
+
+
 #: docs/CONTRACTS.md conventions — "a consumer must reject or explicitly
 #: handle a version it does not recognize rather than guessing at an
 #: unfamiliar shape."

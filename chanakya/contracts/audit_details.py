@@ -177,6 +177,8 @@ def envelope_summary(envelope: Optional[CapabilityEnvelope]) -> Optional[Dict[st
         "timeout_seconds": envelope.timeout_seconds,
         "max_output_bytes": envelope.max_output_bytes,
         "output_schema_hash": compute_content_hash(envelope.to_dict()["output_schema"]),
+        # Phase 15 (AuditEvent 1.2.0): the Registry-declared egress.
+        "model_egress": envelope.model_egress.value,
     }
 
 
@@ -241,7 +243,10 @@ REQUEST_KEYS = frozenset(
 POLICY_KEYS = frozenset(
     {"verdict", "matched_rule", "reason", "capability", "target_ref", "classification", "risk_category", "envelope"}
 )
-ENVELOPE_KEYS = frozenset({"capability", "timeout_seconds", "max_output_bytes", "output_schema_hash"})
+ENVELOPE_KEYS_V1 = frozenset({"capability", "timeout_seconds", "max_output_bytes", "output_schema_hash"})
+#: Phase 15 (AuditEvent 1.2.0) adds the Registry-declared model egress.
+ENVELOPE_KEYS = ENVELOPE_KEYS_V1 | {"model_egress"}
+_EGRESS_VALUES = frozenset({"allowed", "evidence_only"})
 APPROVAL_KEYS = frozenset({"step_id", "expires_at", "risk_context"})
 RISK_CONTEXT_KEYS = frozenset({"capability", "target_ref", "parameters_canonical", "parameters_hash"})
 DISPATCH_KEYS = frozenset(
@@ -266,10 +271,11 @@ def _is_positive_int(value: Any) -> bool:
     return type(value) is int and value > 0
 
 
-def validate_details(event_type: str, details: Any) -> List[str]:
+def validate_details(event_type: str, details: Any, *, egress_recorded: bool = True) -> List[str]:
     """Problems with a stored enriched ``details`` mapping, as fixed codes.
     Unknown or missing keys, wrong types and unsafe text are all reported;
-    extra keys are never accepted."""
+    extra keys are never accepted. ``egress_recorded`` is True for AuditEvent
+    1.2.0+ streams, whose envelope summary must carry ``model_egress``."""
     if not isinstance(details, Mapping):
         return ["details_missing"]
     keys = set(details)
@@ -305,7 +311,8 @@ def validate_details(event_type: str, details: Any) -> List[str]:
         envelope = details["envelope"]
         if envelope is not None and (
             not isinstance(envelope, Mapping)
-            or set(envelope) != ENVELOPE_KEYS
+            or set(envelope) != (ENVELOPE_KEYS if egress_recorded else ENVELOPE_KEYS_V1)
+            or (egress_recorded and envelope["model_egress"] not in _EGRESS_VALUES)
             or not _is_text(envelope["capability"])
             or not _is_positive_int(envelope["timeout_seconds"])
             or not _is_positive_int(envelope["max_output_bytes"])

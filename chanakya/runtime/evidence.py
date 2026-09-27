@@ -31,7 +31,18 @@ import uuid
 from typing import Any, Mapping, Optional, Protocol
 
 from chanakya.contracts.evidence import Evidence
+from chanakya.contracts.tool_output_screening import (
+    TOOL_OUTPUT_SCREENING_VERSION,
+    rejection_message,
+    screen_tool_output,
+)
 from chanakya.evidence.store import EvidenceStore
+
+
+class UnscreenedEvidenceError(ValueError):
+    """Phase 15 (NX-INV-2): the production recorder refuses Evidence that
+    does not carry the current screening marker, or whose payload does not
+    pass the same screen. The message is a fixed code, never content."""
 
 
 class EvidenceRecorder(Protocol):
@@ -88,4 +99,12 @@ class FilesystemEvidenceRecorder:
         self._store = store
 
     def record(self, evidence: Evidence, payload: Optional[Mapping[str, Any]] = None) -> str:
+        # Phase 15 backstop: the Runtime's gate already screened this payload.
+        # Re-running the SAME function here means an injected or alternate
+        # caller of this recorder gets the same answer, never a different one.
+        if evidence.screening_version != TOOL_OUTPUT_SCREENING_VERSION or evidence.redactions_applied is not False:
+            raise UnscreenedEvidenceError("evidence_screening_missing")
+        code = screen_tool_output(payload if payload is not None else {})
+        if code is not None:
+            raise UnscreenedEvidenceError(rejection_message(code))
         return self._store.append(evidence, payload).evidence_id

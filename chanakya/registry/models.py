@@ -14,8 +14,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, Optional, Sequence
 
+from chanakya.contracts.enums import ModelEgress
 from chanakya.capability.model import ActionType, PermissionLevel, derive_permission_level, validate_action_type_classification
 from chanakya.contracts.enums import Classification, RiskCategory
 
@@ -128,10 +129,16 @@ class RegistryEntry:
     created_at: str
     updated_at: str
     owner: str
+    #: Phase 15: admin-declared model egress. Syntactically optional only so
+    #: the field can follow the others; a missing, string or unknown value is
+    #: refused at construction (fail closed, never defaulted to ALLOWED).
+    model_egress: Optional[ModelEgress] = None
 
     def __post_init__(self) -> None:
         if not self.capability:
             raise ValueError("RegistryEntry.capability must be non-empty")
+        if not isinstance(self.model_egress, ModelEgress):
+            raise ValueError("RegistryEntry.model_egress must be declared as a ModelEgress value")
         if not self.operations:
             raise ValueError("RegistryEntry.operations must be non-empty")
         if not self.supported_target_types:

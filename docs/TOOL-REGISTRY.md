@@ -79,6 +79,7 @@ form except through the filtered projection in §4.
 | 18 | Registry version | `registry_version` | string (semver) | required | Version of the **whole catalog** this entry was last validated against — bumped on any addition/change/removal, analogous to `POLICY-GATEWAY.md`'s `policy_set_version` |
 | 19 | Enable/disable state | `status` | enum — see Lifecycle (§6) | required | Full lifecycle state, not just a boolean; only `enabled` entries are invocable or Agent-visible |
 | 20 | Audit requirements | *(process, not a field)* | — | — | See §7 |
+| 21 | Model egress | `model_egress` | enum(`allowed`,`evidence_only`) | required (Phase 15; no default, missing or unknown fails closed) | Whether this capability's screened output may become model context (`allowed`) or only Evidence (`evidence_only`). Admin-declared, carried in the `CapabilityEnvelope`; never taken from the handler, the result, parameters or the model. A data-flow constraint, **not** an authorization input: the Gateway never reads it |
 
 Additional bookkeeping fields required on every entry: `contract_version`
 (RegistryEntry schema version), `created_at`, `updated_at`, `owner`
@@ -362,6 +363,15 @@ differences:
 - **Never collected.** No process arguments, no environment, no
   subprocess, no shell. Strict parsers reject malformed rows instead of
   skipping them.
+
+### Model egress (Phase 15)
+
+Both production capabilities declare `model_egress: allowed`. They are
+unchanged otherwise: same permission level, target scope, action type and
+parameters. `envelope_from_registry_entry` copies the value into
+`CapabilityEnvelope.model_egress`, and the Runtime shows a result to the
+model only when the authorizing envelope says `allowed`. See
+`docs/AGENT-RUNTIME.md` "Tool-output screening and model egress (Phase 15)".
 
 ### Capability execution envelope (Phase 11)
 

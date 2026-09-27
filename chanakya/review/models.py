@@ -55,6 +55,9 @@ class PolicyRecord:
     envelope_timeout_seconds: Optional[int]
     envelope_max_output_bytes: Optional[int]
     envelope_output_schema_hash: Optional[str]
+    #: Phase 15: the Registry-declared egress in the envelope summary
+    #: (AuditEvent 1.2.0+); None for older streams or a deny.
+    envelope_model_egress: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -102,6 +105,11 @@ class EvidenceRecord:
     capability: str
     target_id: str
     verified: bool
+    #: Phase 15: the screening policy version this record carries, or None.
+    #: For a pre-1.2.0 stream, None means "predates Phase 15", never
+    #: "screened and clean".
+    screening_version: Optional[str] = None
+    screening_required: bool = False
 
 
 @dataclass(frozen=True)

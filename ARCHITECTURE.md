@@ -236,6 +236,24 @@ enforced.
   declarative. See `docs/TOOL-REGISTRY.md` "Capability execution
   envelope (Phase 11)".
 
+**Status (Phase 15):** tool output crosses one sensitivity gate. The flow
+is:
+
+```
+ToolResult → envelope (JSON, size, schema) → credential screen → Evidence → egress gate → model context
+```
+
+- **The screen.** Every successful tool output is screened for
+  credential-shaped content before Evidence or model context can exist. It
+  covers every persisted field, at any depth, keys included, with bounded
+  traversal. A hit rejects the whole result:
+  `sensitive_output_rejected: <CODE>`. There is no Evidence, no context
+  source, no retry and no redaction.
+- **Egress.** The Registry declares each capability's `model_egress`
+  (`allowed` or `evidence_only`), carried in the `CapabilityEnvelope`. Only
+  `allowed` output can become model context. The screen and the egress
+  class carry no authority: Policy Gateway verdicts are unchanged.
+
 ## 9. Security Tool Registry
 
 The catalog of every capability the system knows how to run. Each entry

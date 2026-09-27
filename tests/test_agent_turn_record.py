@@ -39,7 +39,7 @@ from chanakya.contracts.agent_turn import (
     validate_turn_details,
 )
 from chanakya.contracts.audit_details import AuditFactError
-from chanakya.contracts.audit_event import AuditEvent, AuditEventType
+from chanakya.contracts.audit_event import AUDIT_EVENT_CONTRACT_VERSION, AuditEvent, AuditEventType
 from chanakya.contracts.investigation_context import InvestigationStatus
 from chanakya.contracts.tool_result import ToolResultStatus
 from chanakya.policy.gateway import EvaluationContext
@@ -382,7 +382,8 @@ def test_golden_manifest_outcome_identity_and_request():
         instructions_hash=hash_value(render_instructions("golden objective", "inv-golden")),
         objective_hash=hash_value("golden objective"), capability_catalog_hash=hash_value([]),
         target_context_hash=None, environment_context_hash=None,
-        entries=(ContextEntry(0, "tool_result:tr-1", "evidence", "tr-1", "step-1", "ev-1", hash_json_normalized({"k": "v"})),),
+        entries=(ContextEntry(0, "tool_result:tr-1", "evidence", "tr-1", "step-1", "ev-1", hash_json_normalized({"k": "v"}),
+                              capability="list_listening_ports", model_egress="allowed"),),
         provider=identity, provider_request_hash=hash_value({"model": "m"}),
     )
     outcome = TurnOutcomeRecord(
@@ -712,7 +713,7 @@ def test_every_provider_call_has_exactly_one_outcome(tmp_path):
     turn_types = [e.event_type for e in _turn_events(run)]
     assert turn_types == [E.AGENT_TURN_REQUESTED, E.AGENT_TURN_RECEIVED, E.AGENT_TURN_REQUESTED,
                           E.AGENT_TURN_REJECTED, E.AGENT_TURN_REQUESTED, E.AGENT_TURN_RECEIVED]
-    assert all(e.contract_version == "1.1.0" for e in _events(run))
+    assert all(e.contract_version == AUDIT_EVENT_CONTRACT_VERSION for e in _events(run))
 
 
 # ===========================================================================
@@ -881,10 +882,10 @@ def test_turn_events_do_not_exist_before_contract_1_1_0(tmp_path):
         AuditEvent(audit_event_id="a", contract_version="9.9.9", event_type=E.ERROR, occurred_at="t", actor="system")
     run = _completed(tmp_path)
     _mutate_turn(run, "investigation_started", 1, lambda e: e.update(contract_version="1.0.0"))
-    # A 1.0.0 stream cannot carry turn events: flagged, never trusted.
     review = run.review()
     assert review.audit_verified  # the attacker rewrote a valid chain...
-    assert "turn_event_unsupported_version" in codes(review)  # ...but the turn events are still flagged
+    # ...but Phase 15 judges a stream by its strictest version and flags the mix.
+    assert "mixed_contract_versions" in codes(review)
     assert not review.consistent
 
 

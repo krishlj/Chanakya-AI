@@ -1832,6 +1832,93 @@ outcome, provider identity and a canonical provider request hash.
 - The context window, sequence counter and context sources are in memory.
   Nothing here makes an investigation resumable.
 
+#### Tool-output screening and model egress (Phase 15)
+
+**Why.** A successful tool result was persisted as Evidence and shown to the
+model with no content control, while every other durable text path was
+credential-screened (T-20, T-60).
+
+**Flow.**
+
+```
+ToolResult → Tool Layer envelope (JSON → size → schema)
+  → Runtime: THE tool-output screen (chanakya.contracts.tool_output_screening)
+      REJECT → ToolResult(error, "sensitive_output_rejected: <CODE>") → no Evidence, no context, no retry
+      PASS   → Evidence (screening_version, redactions_applied=false)
+             → egress gate: envelope.model_egress == allowed ? context source : Evidence only
+```
+
+- **One screen (NX-INV-1/2).** `screen_tool_output` runs in
+  `AgentLoopController._execute_once` on the only path from a successful
+  result to Evidence or context, whatever executor produced the result.
+  - It screens exactly the payload that would be persisted (`output`,
+    `raw_output`, `warnings`, `error_message`): every string value and
+    every key, at any depth.
+  - It uses the shared credential patterns (URL userinfo,
+    `key=`/`key:` credential assignments, PEM private-key headers) plus
+    upper-case env-style assignments (`KEY=`, `…_TOKEN=`, `…_SECRET=`).
+  - It is bounded: 1 MiB canonical size, depth 32, 100 000 nodes. Anything
+    over a bound, non-JSON or with non-string keys is rejected, never
+    skipped.
+  - `FilesystemEvidenceRecorder` calls the same function again as a
+    backstop (same answer, not a second policy), and refuses Evidence that
+    lacks the current marker.
+- **Rejection (NX-INV-5).** The result becomes `status=error` with the fixed
+  message `sensitive_output_rejected: <CODE>`; output, raw output and
+  warnings are dropped.
+  - No Evidence, no context source, no retry (`dispatch_failed` with
+    `retry_scheduled: false`, reason `sensitive_output_rejected`), and no
+    repair, truncation or redaction.
+  - The model is not told anything about the rejected result.
+- **Provenance (NX-INV-4).** Screened Evidence carries `screening_version`
+  (`chanakya-tool-output-screen/1.0.0`) and `redactions_applied=false`
+  ("screened, nothing redacted"). Records without the field predate
+  Phase 15.
+- **Egress (NX-INV-3).** `RegistryEntry.model_egress` (`allowed` /
+  `evidence_only`, required, no default) is copied into
+  `CapabilityEnvelope.model_egress`.
+  - The Runtime records each result's authorizing envelope at dispatch.
+    Only results whose envelope says `allowed` become context sources.
+  - An `evidence_only` source that appears in the window fails the
+    investigation (`context_source_rejected`). A caller-supplied one is
+    rejected as not Runtime-owned. A manifest entry with any egress other
+    than `allowed` cannot be recorded (audit fact error, so the turn halts).
+  - Manifest entries record `capability` and `model_egress`; the
+    `policy_evaluated` envelope summary records `model_egress`.
+  - The handler, the result, parameters and the model cannot influence it.
+- **Review.** For AuditEvent 1.2.0 streams it checks:
+  - every Evidence record has a supported marker and
+    `redactions_applied=false`, and its payload still passes the screen;
+  - every context entry names its request's capability, an `allowed`
+    egress, and the same egress as the authorizing envelope.
+
+  Mixed-version streams are flagged and judged by their highest version.
+  Older streams are shown as "not assessed (predates Phase 15)".
+- **Provider retries.** `AnthropicProvider` sets `max_retries=0`, also on
+  injected clients (`with_options`): one recorded turn is exactly one send.
+- **Authority (NX-INV-6).** Screening and egress are data-flow controls.
+  The Policy Gateway, approval, dispatch, intake and risk never reference
+  them, and verdicts are identical for `allowed` and `evidence_only`.
+
+| ID | Invariant | Tests (`tests/test_tool_output_screening.py`) |
+|---|---|---|
+| NX-INV-1 | No successful ToolResult containing a credential-shaped key or string value becomes Evidence, a context source or model context; it is rejected with a fixed code that contains no content. | `test_t60_sensitive_output_never_reaches_evidence_context_or_provider`, `test_screen_detects_credentials_at_any_depth`, `test_screen_covers_every_persisted_payload_field`, `test_rejection_error_contains_only_the_fixed_code` |
+| NX-INV-2 | The screen is on the single authoritative path; no recorder, retry or injected source bypasses it. | `test_injected_evidence_recorder_never_sees_rejected_output`, `test_production_recorder_refuses_unscreened_or_unmarked_evidence`, `test_screen_is_bounded_and_fails_closed` |
+| NX-INV-3 | Only output whose Registry-declared egress is `allowed` can become model context. | `test_evidence_only_output_is_evidence_but_never_model_context`, `test_handler_cannot_declare_its_own_egress`, `test_parameters_and_the_model_cannot_change_egress`, `test_evidence_only_result_cannot_be_forced_into_model_context`, `test_evidence_only_source_in_runtime_state_fails_closed`, `test_registry_requires_a_declared_egress`, `test_envelope_requires_a_declared_egress`, `test_review_flags_forged_manifest_egress` |
+| NX-INV-4 | Every Phase 15-era Evidence record has explicit screening provenance; Review detects missing or inconsistent provenance. | `test_clean_evidence_records_screening_provenance`, `test_evidence_contract_validates_screening_provenance`, `test_review_flags_missing_screening_marker`, `test_review_flags_a_forged_screening_marker`, `test_historical_streams_predate_the_control_and_are_not_reported_as_screened`, `test_review_flags_mixed_contract_versions` |
+| NX-INV-5 | Rejection is deterministic: not retried, repaired, truncated, partially stored or sent. | `test_rejection_never_retries_even_with_budget`, `test_t60_sensitive_output_never_reaches_evidence_context_or_provider`, `test_one_recorded_turn_is_one_provider_send` |
+| NX-INV-6 | Screening and egress metadata carry no authority. | `test_screening_and_egress_are_unreachable_from_authorization`, `test_egress_never_changes_a_policy_verdict`, `test_screening_rejection_changes_no_policy_approval_or_risk` |
+
+**Limitations.**
+- Pattern-based credential detection. Novel secret formats, and sensitive
+  but non-credential data, pass; general classification or DLP is
+  deferred.
+- The screen can over-block legitimate output with credential-like keys or
+  assignments. That fails closed with a fixed code.
+- Both production capabilities are `allowed`: their output still leaves
+  the host by design.
+- Evidence at rest is not encrypted or permission-restricted.
+
 **`RuntimeExecutionLimits`** — admin-controlled configuration (trusted,
 versioned, not Agent-writable), analogous to `PolicySet`.
 
@@ -1916,7 +2003,7 @@ Never includes a credential (RT-INV-11); never visible to the Agent.
 | SR-15, SR-16 | Context Assembler wraps tool/target output as data (RT-INV-7); `AgentTurnOutput`/`ToolRequest` always schema-validated before use |
 | SR-17 | `Finding` storage rejects empty `evidence_refs` before it ever reaches `InvestigationContext` |
 | SR-18 | `RiskAssessment` handling is validation/storage only — the Runtime never computes or overrides one itself. The deterministic Risk Engine (`chanakya.risk`, Phase 10) is injected as a `RiskAssessor`; the Runtime only validates its output against the Findings it stored |
-| SR-19 | `Recommendation`s are stored, displayed, and never auto-dispatched — a new `ToolRequest` always re-enters the full pipeline |
+| SR-19 | **Not implemented** (design only; corrected in Phase 15). No `Recommendation` type is produced, stored or displayed. The design requirement stands: a future `Recommendation` must never be auto-dispatched, and acting on one must go through a new, independently evaluated `ToolRequest` |
 | SR-20 | Timeout Supervisor + Resource Governor (§10, §18) |
 | SR-21 | Runtime does not alter or escalate `required_privileges`; it only observes the Gateway's existing SR-21 check |
 

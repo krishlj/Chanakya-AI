@@ -18,7 +18,7 @@ from typing import Optional, Tuple
 
 from chanakya.capability.model import ActionType
 from chanakya.capability.schema import find_open_schema_violations
-from chanakya.contracts.enums import Classification, RiskCategory
+from chanakya.contracts.enums import Classification, ModelEgress, RiskCategory
 from chanakya.registry.models import (
     ApprovalRequirement,
     OSPrivilege,
@@ -158,6 +158,8 @@ def make_observe_local_host_environment_entry(*, now: Optional[str] = None) -> R
         created_at=timestamp,
         updated_at=timestamp,
         owner="chanakya-core",
+        # Phase 15: coarse platform facts may be shown to the model.
+        model_egress=ModelEgress.ALLOWED,
     )
 
 
@@ -237,6 +239,8 @@ def make_list_listening_ports_entry(*, now: Optional[str] = None) -> RegistryEnt
         created_at=timestamp,
         updated_at=timestamp,
         owner="chanakya-core",
+        # Phase 15: listening sockets may be shown to the model.
+        model_egress=ModelEgress.ALLOWED,
     )
 
 

@@ -434,7 +434,9 @@ def _render_review(output: TextIO, review: Any) -> None:
             if policy.envelope_timeout_seconds is not None:
                 write(
                     f"      envelope: timeout {policy.envelope_timeout_seconds}s, max output "
-                    f"{policy.envelope_max_output_bytes} bytes, schema {_safe(policy.envelope_output_schema_hash)}\n"
+                    f"{policy.envelope_max_output_bytes} bytes, schema {_safe(policy.envelope_output_schema_hash)}"
+                    + (f", model egress {_safe(policy.envelope_model_egress)}" if policy.envelope_model_egress else "")
+                    + "\n"
                 )
         if request.approval is not None:
             approval = request.approval
@@ -471,9 +473,17 @@ def _render_review(output: TextIO, review: Any) -> None:
         )
     write(f"evidence records: {len(review.evidence)}\n")
     for evidence in review.evidence:
+        # Phase 15: screening provenance. Absence in an older stream means
+        # the record predates the control, never "screened and clean".
+        if evidence.screening_version is not None:
+            screening = f"screened {_safe(evidence.screening_version)}"
+        elif evidence.screening_required:
+            screening = "NOT SCREENED"
+        else:
+            screening = "not assessed (predates Phase 15)"
         write(
             f"  {_safe(evidence.evidence_id)} {_safe(evidence.capability)} on {_safe(evidence.target_id)}"
-            f" ({'verified' if evidence.verified else 'NOT VERIFIED'})\n"
+            f" ({'verified' if evidence.verified else 'NOT VERIFIED'}; {screening})\n"
         )
     write(f"findings: {len(review.findings)} (agent opinions grounded in evidence; not verified facts)\n")
     for finding in review.findings:

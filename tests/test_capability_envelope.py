@@ -41,7 +41,7 @@ from chanakya.capability.schema import (
     validate,
 )
 from chanakya.contracts.audit_event import AuditEventType
-from chanakya.contracts.enums import Classification, Verdict
+from chanakya.contracts.enums import Classification, ModelEgress, Verdict
 from chanakya.contracts.investigation_context import InvestigationStatus
 from chanakya.contracts.investigation_request import InvestigationRequest
 from chanakya.contracts.policy_decision import PolicyDecision
@@ -119,7 +119,8 @@ VALID = {"items": [{"name": "x", "count": 1, "kind": "a"}], "note": "ok"}
 
 
 def envelope(**overrides) -> CapabilityEnvelope:
-    fields = dict(capability=CAP, output_schema=SCHEMA, max_output_bytes=4096, timeout_seconds=15)
+    fields = dict(capability=CAP, output_schema=SCHEMA, max_output_bytes=4096, timeout_seconds=15,
+                  model_egress=ModelEgress.ALLOWED)
     fields.update(overrides)
     return CapabilityEnvelope(**fields)
 
@@ -332,7 +333,8 @@ def test_envelope_rejects_extra_authority_or_resource_fields(extra):
 
 def test_envelope_carries_no_cpu_memory_or_concurrency_fields():
     names = {f.name for f in dataclasses.fields(CapabilityEnvelope)}
-    assert names == {"capability", "output_schema", "max_output_bytes", "timeout_seconds"}
+    # Phase 15 adds model_egress (a data-flow constraint), still no resource fields.
+    assert names == {"capability", "output_schema", "max_output_bytes", "timeout_seconds", "model_egress"}
 
 
 def entry(**overrides):
@@ -348,7 +350,7 @@ def entry(**overrides):
 
 def test_registry_entry_conversion_uses_the_declaration():
     env = envelope_from_registry_entry(entry(default_timeout_seconds=7))
-    assert env == CapabilityEnvelope(CAP, SCHEMA, 4096, 7)
+    assert env == CapabilityEnvelope(CAP, SCHEMA, 4096, 7, ModelEgress.ALLOWED)
 
 
 @pytest.mark.parametrize("status", [s for s in Status if s != Status.ENABLED])

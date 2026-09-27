@@ -1338,12 +1338,12 @@ def test_mock_transport_path_records_every_request_and_nothing_else():
 # ===========================================================================
 
 
-def test_sdk_default_retry_is_left_at_sdk_default_on_provider_built_clients():
-    """Documented: AnthropicProvider does not override the SDK's
-    max_retries (2) — any retrying is SDK-internal, never Chanakya's."""
+def test_sdk_retries_are_disabled_on_provider_built_clients():
+    """Phase 15: the SDK default (2 retries) would let one recorded turn
+    become up to three sends; the provider sets max_retries=0."""
     provider = AnthropicProvider(_config(), SENTINEL_KEY)
-    assert anthropic.DEFAULT_MAX_RETRIES == 2
-    assert provider._client.max_retries == anthropic.DEFAULT_MAX_RETRIES
+    assert anthropic.DEFAULT_MAX_RETRIES == 2  # the SDK default being overridden
+    assert provider._client.max_retries == 0
 
 
 @pytest.mark.parametrize("status", [400, 401, 403, 404])
@@ -1418,12 +1418,17 @@ def test_provider_built_client_does_not_follow_redirects():
     assert provider._client.timeout == 11.0  # client-level timeout unchanged by the fix
 
 
-def test_injected_client_is_used_as_is():
-    """The fix applies only when the provider builds its own client."""
+def test_injected_client_keeps_its_transport_but_never_retries():
+    """The redirect fix applies only when the provider builds its own
+    client; an injected client keeps its own transport. Phase 15: its SDK
+    retries are always turned off (one recorded turn, one send)."""
     transport = RecordingTransport(_conclude_response())
-    client = _mock_client(transport)
+    client = _mock_client(transport, max_retries=2)
     provider = AnthropicProvider(_config(), SENTINEL_KEY, client=client)
-    assert provider._client is client
+    assert provider._client.max_retries == 0
+    assert provider._client._client is client._client  # same underlying HTTP client/transport
+    provider.next_turn(_assembled_context())
+    assert len(transport.requests) == 1
 
 
 def test_credential_is_not_forwarded_across_origin_on_redirect(provider_built_transport):
@@ -1483,7 +1488,8 @@ def test_sdk_retry_on_redirect_never_leaves_the_original_host(provider_built_tra
     with pytest.raises(anthropic.APIStatusError):
         provider.next_turn(_assembled_context())
 
-    assert len(provider_built_transport.requests) == 1 + anthropic.DEFAULT_MAX_RETRIES
+    # Phase 15: no SDK retry at all (max_retries=0), so exactly one send.
+    assert len(provider_built_transport.requests) == 1
     assert {r.url.host for r in provider_built_transport.requests} == {"api.anthropic.com"}
 
 

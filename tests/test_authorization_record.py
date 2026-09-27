@@ -133,7 +133,9 @@ def test_origin_details_bound_target_scope():
 def test_envelope_summary_hashes_the_schema_instead_of_copying_it():
     env = envelope_from_registry_entry(make_observe_local_host_environment_entry())
     summary = envelope_summary(env)
-    assert set(summary) == {"capability", "timeout_seconds", "max_output_bytes", "output_schema_hash"}
+    # Phase 15 (AuditEvent 1.2.0): plus the Registry-declared egress.
+    assert set(summary) == {"capability", "timeout_seconds", "max_output_bytes", "output_schema_hash", "model_egress"}
+    assert summary["model_egress"] == "allowed"
     assert summary["output_schema_hash"] == compute_content_hash(env.to_dict()["output_schema"])
     assert "properties" not in json.dumps(summary)
 

@@ -62,6 +62,9 @@ MAX_EXPLANATION_CHARS = 2000
 #: provider does not report one (an undeclared, in-process provider).
 ACCEPTED_STOP_REASONS = frozenset({"end_turn", "tool_use", "stop_sequence"})
 
+#: Phase 15: the only egress class that may appear in model context.
+MODEL_EGRESS_ALLOWED = "allowed"
+
 SOURCE_KIND_EVIDENCE = "evidence"
 SOURCE_KIND_TOOL_RESULT_ERROR = "tool_result_error"
 SOURCE_KINDS = frozenset({SOURCE_KIND_EVIDENCE, SOURCE_KIND_TOOL_RESULT_ERROR})
@@ -242,8 +245,15 @@ class ContextEntry:
     step_id: str
     evidence_id: Optional[str]
     content_hash: str
+    #: Phase 15: the capability that produced the data and its
+    #: Registry-declared egress. Only ``allowed`` can be model context, so a
+    #: manifest entry with any other value cannot be recorded (fail closed).
+    capability: str = ""
+    model_egress: str = ""
 
     def to_details(self) -> Dict[str, Any]:
+        if self.model_egress != MODEL_EGRESS_ALLOWED:
+            raise AuditFactError(FACT_INVALID, "model_egress")
         if self.source_kind not in SOURCE_KINDS:
             raise AuditFactError(FACT_INVALID, "source_kind")
         if (self.source_kind == SOURCE_KIND_EVIDENCE) != (self.evidence_id is not None):
@@ -260,6 +270,8 @@ class ContextEntry:
             "step_id": text_fact("step_id", self.step_id),
             "evidence_id": text_fact("evidence_id", self.evidence_id, optional=True),
             "content_hash": self.content_hash,
+            "capability": text_fact("capability", self.capability),
+            "model_egress": self.model_egress,
         }
 
 
@@ -403,9 +415,12 @@ MANIFEST_KEYS = frozenset(
         "provider", "provider_request_hash",
     }
 )
-CONTEXT_ENTRY_KEYS = frozenset(
+CONTEXT_ENTRY_KEYS_V1 = frozenset(
     {"position", "source", "source_kind", "tool_result_id", "step_id", "evidence_id", "content_hash"}
 )
+#: Phase 15 (AuditEvent 1.2.0): each entry also names its capability and
+#: its Registry-declared egress.
+CONTEXT_ENTRY_KEYS = CONTEXT_ENTRY_KEYS_V1 | {"capability", "model_egress"}
 PROVIDER_KEYS = frozenset(
     {"provider", "model", "endpoint", "config_version", "timeout_seconds", "max_tokens", "declared"}
 )
@@ -443,9 +458,12 @@ def _provider_from_details(details: Any) -> Optional[ProviderIdentity]:
         return None
 
 
-def validate_turn_details(event_type: str, details: Any) -> List[str]:
+def validate_turn_details(event_type: str, details: Any, *, egress_recorded: bool = True) -> List[str]:
     """Problems with stored turn ``details``, as fixed codes. Closed key
-    sets; wrong types, unsafe text and malformed hashes are reported."""
+    sets; wrong types, unsafe text and malformed hashes are reported.
+    ``egress_recorded`` is True for AuditEvent 1.2.0+ streams, whose context
+    entries must carry ``capability`` and ``model_egress``."""
+    entry_keys = CONTEXT_ENTRY_KEYS if egress_recorded else CONTEXT_ENTRY_KEYS_V1
     if not isinstance(details, Mapping):
         return ["details_missing"]
     if event_type == "agent_turn_requested":
@@ -474,7 +492,9 @@ def validate_turn_details(event_type: str, details: Any) -> List[str]:
             for position, entry in enumerate(entries):
                 if (
                     not isinstance(entry, Mapping)
-                    or set(entry) != CONTEXT_ENTRY_KEYS
+                    or set(entry) != entry_keys
+                    or (egress_recorded and not _is_text(entry["capability"]))
+                    or (egress_recorded and entry["model_egress"] not in ("allowed", "evidence_only"))
                     or entry["position"] != position
                     or entry["source_kind"] not in SOURCE_KINDS
                     or not _is_text(entry["tool_result_id"])

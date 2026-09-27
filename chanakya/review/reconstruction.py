@@ -37,6 +37,17 @@ What it checks:
    verified payload), and requires every proposed request, finding and
    completion to follow an accepted turn that produced it. Turn records are
    forensic; Review never treats them as authority.
+6. **Sensitive-data screening and egress (Phase 15, NX-INV-3/4).** For
+   streams written under AuditEvent 1.2.0, every Evidence record must carry
+   the screening marker (``screening_version``, ``redactions_applied=False``)
+   and its payload must still pass the same screen; every model context
+   entry must name the capability that produced it and an ``allowed``
+   egress that matches the ``policy_evaluated`` envelope summary. Older
+   streams are reported as predating the control, never as screened.
+7. **Versions.** The Runtime writes one ``contract_version`` per stream. A
+   stream with several is flagged (``mixed_contract_versions``) and judged
+   by the strictest (highest) version it contains, so downgrading the first
+   event cannot relax any check.
 
 Anomalies are fixed codes plus, at most, an identifier.
 """
@@ -56,6 +67,11 @@ from chanakya.contracts.agent_turn import (
     validate_turn_details,
 )
 from chanakya.contracts.audit_details import validate_details
+from chanakya.contracts.audit_event import version_tuple
+from chanakya.contracts.tool_output_screening import (
+    is_supported_screening_version,
+    screen_tool_output,
+)
 from chanakya.evidence.store import EvidenceStoreError
 from chanakya.findings.store import FindingStoreError
 
@@ -97,6 +113,7 @@ class _Builder:
         self.terminal_reason: Optional[str] = None
         # Phase 14: model-turn replay state.
         self.turn_era = False
+        self.egress_era = False
         self.turns: Dict[str, Dict[str, Any]] = {}
         self.pending_turn: Optional[str] = None
         self.last_turn_sequence = 0
@@ -111,6 +128,23 @@ class _Builder:
 
     # -- event replay ---------------------------------------------------
 
+    def set_versions(self, records) -> None:
+        """Phase 15: one version per stream. Mixed versions are an anomaly,
+        and the strictest (highest) version present decides which records
+        are required: turn records from 1.1.0, egress and screening
+        provenance from 1.2.0."""
+        versions = set()
+        for record in records:
+            try:
+                versions.add(version_tuple(record.event.contract_version))
+            except (TypeError, ValueError, AttributeError):
+                self.flag("contract_version_invalid")
+        if len(versions) > 1:
+            self.flag("mixed_contract_versions")
+        strictest = max(versions) if versions else (1, 0, 0)
+        self.turn_era = strictest >= (1, 1, 0)
+        self.egress_era = strictest >= (1, 2, 0)
+
     def replay(self, records) -> None:
         for index, record in enumerate(records):
             event = record.event
@@ -121,15 +155,12 @@ class _Builder:
                 self.flag("event_after_terminal", event.audit_event_id)
             if index == 0 and kind != "investigation_started":
                 self.flag("stream_missing_investigation_started")
-            if index == 0:
-                # Phase 14: turn records exist, and are required, from 1.1.0.
-                self.turn_era = event.contract_version != "1.0.0"
             handler = getattr(self, f"_on_{kind}", None)
             if handler is not None:
                 handler(index, ids, details)
 
     def _details_ok(self, kind: str, details: Any, subject: Optional[str]) -> bool:
-        problems = validate_details(kind, details)
+        problems = validate_details(kind, details, egress_recorded=self.egress_era)
         for code in problems:
             self.flag(code, subject)
         return not problems
@@ -200,6 +231,7 @@ class _Builder:
             envelope_timeout_seconds=envelope["timeout_seconds"] if envelope else None,
             envelope_max_output_bytes=envelope["max_output_bytes"] if envelope else None,
             envelope_output_schema_hash=envelope["output_schema_hash"] if envelope else None,
+            envelope_model_egress=envelope.get("model_egress") if envelope else None,
         )
         request["policy_decision_id"] = ids.get("policy_decision_id")
 
@@ -337,7 +369,7 @@ class _Builder:
         if not self.turn_era:
             self.flag("turn_event_unsupported_version", subject)
             return False
-        problems = validate_turn_details(kind, details)
+        problems = validate_turn_details(kind, details, egress_recorded=self.egress_era)
         for code in problems:
             self.flag(code, subject)
         return not problems
@@ -405,6 +437,18 @@ class _Builder:
                 continue
             if entry["step_id"] != request["step_id"]:
                 self.flag("turn_context_step_mismatch", turn_id)
+            if self.egress_era:
+                # Phase 15 (NX-INV-3): the data came from this capability,
+                # which the Registry (as recorded in the authorizing
+                # decision's envelope) declared egress-allowed.
+                policy = request["policy"]
+                declared = policy.envelope_model_egress if policy is not None else None
+                if entry["capability"] != request["capability"]:
+                    self.flag("turn_context_capability_mismatch", turn_id)
+                if entry["model_egress"] != "allowed":
+                    self.flag("turn_context_egress_not_allowed", turn_id)
+                if declared != entry["model_egress"]:
+                    self.flag("turn_context_egress_mismatch", turn_id)
             dispatch = request["dispatch"] or {}
             if entry["source_kind"] == SOURCE_KIND_EVIDENCE:
                 if request["evidence_id"] != entry["evidence_id"]:
@@ -498,6 +542,7 @@ def reconstruct_investigation(
         )
 
     builder = _Builder(investigation_id)
+    builder.set_versions(records)
     builder.replay(records)
     if builder.pending_turn is not None:
         builder.flag("turn_outcome_missing", builder.pending_turn)
@@ -602,6 +647,9 @@ def _check_evidence(builder: _Builder, evidence_store: Any):
             verified_ids.add(evidence_id)
         except EvidenceStoreError:
             builder.flag("evidence_unverifiable", evidence_id)
+            continue
+        if builder.egress_era:
+            _check_screening(builder, evidence_store, record)
     for evidence_id in by_id:
         if evidence_id not in builder.evidence_events:
             builder.flag("orphan_evidence", evidence_id)
@@ -609,9 +657,31 @@ def _check_evidence(builder: _Builder, evidence_store: Any):
         EvidenceRecord(
             evidence_id=e.evidence_id, tool_result_id=e.tool_result_id, tool_request_id=e.tool_request_id,
             capability=e.capability, target_id=e.target_id, verified=e.evidence_id in verified_ids,
+            screening_version=e.screening_version, screening_required=builder.egress_era,
         )
         for e in stored
     )
+
+
+def _check_screening(builder: _Builder, evidence_store: Any, record: Any) -> None:
+    """Phase 15 (NX-INV-4): 1.2.0-era Evidence must carry the screening
+    marker, must not claim redaction, and its payload must still pass the
+    same screen (a forged marker on unscreened content is caught here).
+    Reports fixed codes only; never repairs."""
+    evidence_id = record.evidence_id
+    if record.screening_version is None:
+        builder.flag("evidence_screening_missing", evidence_id)
+        return
+    if not is_supported_screening_version(record.screening_version) or record.redactions_applied is not False:
+        builder.flag("evidence_screening_invalid", evidence_id)
+        return
+    try:
+        payload = evidence_store.get_payload(evidence_id)
+    except EvidenceStoreError:
+        builder.flag("evidence_unverifiable", evidence_id)
+        return
+    if screen_tool_output(payload if payload is not None else {}) is not None:
+        builder.flag("evidence_screening_inconsistent", evidence_id)
 
 
 def _check_findings(builder: _Builder, finding_store: Any, evidence_store: Any, scoped_evidence: set):

@@ -29,7 +29,7 @@ import pytest
 from chanakya.capability.envelope import CapabilityEnvelope
 from chanakya.capability.model import ActionType, PermissionLevel
 from chanakya.contracts.approval import ApprovalDecisionValue
-from chanakya.contracts.enums import Classification, RiskCategory, Verdict
+from chanakya.contracts.enums import Classification, ModelEgress, RiskCategory, Verdict
 from chanakya.contracts.investigation_context import InvestigationStatus
 from chanakya.contracts.investigation_request import InvestigationRequest
 from chanakya.contracts.target import Target
@@ -148,7 +148,7 @@ def make_instruction(
     # so they supply a permissive one (any object, 64 KiB) for the capability.
     envelope = CapabilityEnvelope(
         capability=capability, output_schema={"type": "object"}, max_output_bytes=65536,
-        timeout_seconds=resolved_timeout_seconds,
+        timeout_seconds=resolved_timeout_seconds, model_egress=ModelEgress.ALLOWED,
     )
     return DispatchInstruction(
         investigation_id=investigation_id,

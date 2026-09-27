@@ -39,6 +39,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Dict, Mapping, Optional
 
+from chanakya.contracts.enums import ModelEgress
 from chanakya.evidence.hashing import canonical_bytes
 
 from .reserved import is_reserved_capability_name
@@ -66,7 +67,7 @@ ENVELOPE_REASON_CODES = frozenset(
 )
 _ALL_REASON_CODES = ENVELOPE_REASON_CODES | SCHEMA_REASON_CODES
 
-_DICT_KEYS = frozenset({"capability", "output_schema", "max_output_bytes", "timeout_seconds"})
+_DICT_KEYS = frozenset({"capability", "output_schema", "max_output_bytes", "timeout_seconds", "model_egress"})
 
 
 class CapabilityEnvelopeError(ValueError):
@@ -100,6 +101,10 @@ class CapabilityEnvelope:
     output_schema: Mapping[str, Any]
     max_output_bytes: int
     timeout_seconds: int
+    #: Phase 15: the Registry-declared model egress of this capability's
+    #: output. Copied from the authorized Registry entry only; a data-flow
+    #: constraint the Runtime enforces, never an authorization verdict.
+    model_egress: ModelEgress
 
     def __post_init__(self) -> None:
         if type(self.capability) is not str or not self.capability:
@@ -112,6 +117,8 @@ class CapabilityEnvelope:
             raise CapabilityEnvelopeError("CapabilityEnvelope.output_schema uses unsupported schema constructs")
         _positive_int("max_output_bytes", self.max_output_bytes)
         _positive_int("timeout_seconds", self.timeout_seconds)
+        if not isinstance(self.model_egress, ModelEgress):
+            raise CapabilityEnvelopeError("CapabilityEnvelope.model_egress must be a ModelEgress value")
         object.__setattr__(self, "output_schema", _freeze(self.output_schema))
 
     def to_dict(self) -> Dict[str, Any]:
@@ -120,20 +127,27 @@ class CapabilityEnvelope:
             "output_schema": _thaw(self.output_schema),
             "max_output_bytes": self.max_output_bytes,
             "timeout_seconds": self.timeout_seconds,
+            "model_egress": self.model_egress.value,
         }
 
     @staticmethod
     def from_dict(data: Any) -> "CapabilityEnvelope":
         if not isinstance(data, Mapping) or set(data) != _DICT_KEYS:
             raise CapabilityEnvelopeError("record does not have the CapabilityEnvelope shape")
-        return CapabilityEnvelope(**dict(data))
+        fields = dict(data)
+        try:
+            fields["model_egress"] = ModelEgress(fields["model_egress"])
+        except (ValueError, TypeError):
+            raise CapabilityEnvelopeError("CapabilityEnvelope.model_egress is not a known value") from None
+        return CapabilityEnvelope(**fields)
 
 
 def envelope_from_registry_entry(entry: Any) -> CapabilityEnvelope:
     """The single RegistryEntry → CapabilityEnvelope conversion. Only an
     enabled entry yields an envelope. Reads the entry's declared
     ``output_schema``, ``resource_limits.max_output_bytes`` and
-    ``default_timeout_seconds``; nothing else is consulted."""
+    ``default_timeout_seconds`` and (Phase 15) ``model_egress``; nothing
+    else is consulted. A missing or unknown egress fails closed."""
     status = getattr(getattr(entry, "status", None), "value", None)
     if status != "enabled":
         raise CapabilityEnvelopeError("only an enabled Registry entry has an execution envelope")
@@ -142,6 +156,7 @@ def envelope_from_registry_entry(entry: Any) -> CapabilityEnvelope:
         output_schema=entry.output_schema,
         max_output_bytes=entry.resource_limits.max_output_bytes,
         timeout_seconds=entry.default_timeout_seconds,
+        model_egress=getattr(entry, "model_egress", None),
     )
 
 

@@ -47,6 +47,7 @@ from dataclasses import dataclass, field
 from typing import Optional, Sequence
 
 from .enums import SUPPORTED_CONTRACT_VERSIONS, Classification
+from .tool_output_screening import is_supported_screening_version
 
 _REQUIRED_STRING_FIELDS = (
     "evidence_id",
@@ -90,6 +91,14 @@ class Evidence:
     #: persisted for this record (e.g. every pre-Phase-5.3 record, or any
     #: record for which no payload was supplied).
     payload_hash: Optional[str] = None
+    #: Phase 15 — the tool-output screening policy
+    #: (``chanakya.contracts.tool_output_screening``) this record's payload
+    #: passed before it was persisted. ``None`` means the record predates
+    #: Phase 15 (never "screened and clean"). When set,
+    #: ``redactions_applied`` must be ``False``: Phase 15 detects and
+    #: rejects, it never redacts, so a screened record is never a redacted
+    #: one.
+    screening_version: Optional[str] = None
 
     def __post_init__(self) -> None:
         for field_name in _REQUIRED_STRING_FIELDS:
@@ -111,3 +120,9 @@ class Evidence:
 
         if self.payload_hash is not None and (not isinstance(self.payload_hash, str) or not self.payload_hash):
             raise ValueError("Evidence.payload_hash must be a non-empty string if present")
+
+        if self.screening_version is not None:
+            if not is_supported_screening_version(self.screening_version):
+                raise ValueError("Evidence.screening_version is not a supported screening policy version")
+            if self.redactions_applied is not False:
+                raise ValueError("screened Evidence must record redactions_applied=False (screening never redacts)")

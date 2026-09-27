@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from typing import Any, Mapping, Optional, Sequence
 
 from chanakya.capability.model import ActionType
-from chanakya.contracts.enums import Classification, RiskCategory, Verdict
+from chanakya.contracts.enums import Classification, ModelEgress, RiskCategory, Verdict
 from chanakya.policy.rules import PolicyRule, RuleConditions, RuleMatch
 from chanakya.registry.models import (
     ApprovalRequirement,
@@ -92,6 +92,7 @@ def make_entry(
         created_at=now(),
         updated_at=now(),
         owner="test-admin",
+        model_egress=ModelEgress.ALLOWED,  # Phase 15: always declared
     )
     fields.update(overrides)
     return RegistryEntry(**fields)

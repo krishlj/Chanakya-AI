@@ -881,6 +881,23 @@ Likelihood/Impact/Risk use: **Low / Medium / High / Critical**.
   occur.
 - **Residual risk**: Medium — redaction scanning is a backstop, not a
   guarantee, against a truly novel secret format it wasn't tuned for.
+- **Implementation status (corrected in Phase 15)**:
+  - Until Phase 15, the "automatic redaction scanning applied to tool
+    output before persistence" above did not exist: successful tool output
+    reached Evidence and model context unscreened (T-60).
+    `Evidence.redactions_applied` was never set.
+  - Phase 15 implements the backstop as **detection and rejection, not
+    redaction**. Every successful tool output is credential-screened before
+    Evidence or context exists; a hit rejects the whole result with a fixed
+    code.
+  - Evidence records the screening policy version and
+    `redactions_applied=false`, meaning "screened, nothing redacted".
+  - Credential screening now covers the objective, parameters, findings,
+    audit details, explanations and tool output. General sensitive-data
+    classification (PII, internal hostnames and so on) is **not**
+    implemented.
+  - *Status:* partially mitigated. The residual is novel or unstructured
+    secret formats.
 
 ### T-21 — API key exposure (LLM provider)
 - **Attack path**: The Anthropic API key is exposed via logs, error
@@ -1373,6 +1390,55 @@ boundary. **Turn records are forensic records and carry no authority.**
   *Residual:* it must be re-reviewed again if context is ever persisted or
   resumed.
 
+### Candidate threats from Phase 15 (tool-output screening and model egress)
+
+- **T-60: unscreened successful tool output crossing the persistence and
+  model boundaries** (TB-6 inbound, TB-8, TB-2; realizes the T-20/T-22 gap).
+  - *Before Phase 15:* credential-shaped text in a successful tool output
+    was written to Evidence and sent to the provider as model context,
+    while the same text was refused as an objective, parameter, finding or
+    explanation. Reproduced with a process name `svc --api_key=…`: the
+    secret was in the Evidence files and in model context.
+  - *Controls (MITIGATED for credential-shaped content):*
+    - one Runtime-owned screen over exactly the payload that would be
+      persisted. It runs after the envelope's JSON, size and schema checks
+      and covers every string value and key at any depth, with bounded
+      traversal. Anything unscreenable is rejected;
+    - a hit becomes an error result (`sensitive_output_rejected: <CODE>`):
+      no Evidence, no context source, no retry, no redaction, and the
+      value is never echoed;
+    - the production Evidence recorder refuses unmarked Evidence and
+      re-runs the same screen;
+    - Review re-screens stored payloads and requires the marker for
+      AuditEvent 1.2.0 streams (NX-INV-1/2/4/5).
+  - *Residual:* pattern-based. Novel or unstructured secret formats, and
+    sensitive-but-not-credential data, pass (general classification is
+    deferred).
+- **T-22 (Phase 15 status): PARTIALLY MITIGATED.**
+  - A Registry-declared `model_egress` (`allowed` or `evidence_only`),
+    carried in the `CapabilityEnvelope`, decides whether a capability's
+    screened output may leave the host as model context. The Runtime
+    enforces it when composing context. An `evidence_only` source fails the
+    investigation closed, and a manifest entry that is not `allowed` cannot
+    be recorded.
+  - Review checks each context entry's egress against the authorizing
+    decision's envelope (NX-INV-3).
+  - Both current capabilities are `allowed`, so their data still reaches
+    the provider by design.
+  - Evidence confidentiality at rest (permissions, encryption) is
+    unchanged.
+- **T-59 (Phase 15 addition).** The provider sets the SDK's `max_retries`
+  to 0, including on injected clients. One recorded turn is now exactly one
+  send, so SDK retries can no longer re-transmit a recorded request unseen.
+- **T-18 (Phase 15 addition).** Review now flags a stream with mixed
+  `contract_version`s and judges it by the highest version present. A
+  rewrite that downgrades only some events can no longer relax the turn,
+  egress or screening checks. A consistent full-chain rewrite remains
+  undetected.
+- **Authority (NX-INV-6).** Screening results, the screening version,
+  `model_egress` and the manifest egress metadata are never read by the
+  Policy Gateway, approval, dispatch or risk (AST and behavioral tests).
+
 ---
 
 ## 9. Security controls (consolidated)
@@ -1453,7 +1519,7 @@ Numbered for later traceability to implementation controls and tests.
 | SR-10 | Evidence and Audit records are append-only; no code path may update or delete an existing record. | T-18 |
 | SR-11 | Every Evidence record includes a content hash and is traceable to its originating `ToolRequest`, `ToolResult`, and `target_id`. | T-18, T-14 |
 | SR-12 | Every state transition in the agent loop emits an `AuditEvent`, including denials, failures, and approval decisions. | T-15, T-16, T-19 |
-| SR-13 | No credential, API key, or access token is ever included in an LLM prompt, or written into a `ToolRequest`, `ToolResult`, `Evidence`, or `AuditEvent`. | T-20, T-21, T-22 |
+| SR-13 | No credential, API key, or access token is ever included in an LLM prompt, or written into a `ToolRequest`, `ToolResult`, `Evidence`, or `AuditEvent`. *(Phase 15: enforced for credential-shaped content by the tool-output screen and the existing text screens; best-effort pattern matching, not a guarantee.)* | T-20, T-21, T-22, T-60 |
 | SR-14 | Credentials are resolved exclusively inside Target Adapters at execution time, sourced from Configuration & Secrets Management. | T-20 |
 | SR-15 | Tool/target output is treated as untrusted data at every point it is reintroduced into an LLM prompt; it is never structurally interpretable as an instruction. | T-03, T-12, T-13 |
 | SR-16 | The LLM is never treated as a security boundary — its output is always schema-validated and always subject to independent policy evaluation. | T-02, T-06 |

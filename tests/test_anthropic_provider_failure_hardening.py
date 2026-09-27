@@ -535,8 +535,10 @@ def test_sdk_default_retry_is_an_sdk_concern_not_chanakyas(
     result = controller.run_turn(started_investigation.investigation_id, wrapper)
 
     assert result.outcome == TurnOutcome.FAILED
-    assert wrapper.call_count == 1  # Chanakya/Runtime: exactly one provider call, regardless of SDK retries
-    assert len(transport.requests) == 2  # SDK-level: 1 initial attempt + 1 SDK-internal retry
+    assert wrapper.call_count == 1  # Chanakya/Runtime: exactly one provider call
+    # Phase 15: the provider turns SDK retries off even on an injected client
+    # (max_retries=1 here), so one recorded turn is exactly one send.
+    assert len(transport.requests) == 1
     assert spy_gateway.call_count == 0
     assert spy_executor.calls == []
 

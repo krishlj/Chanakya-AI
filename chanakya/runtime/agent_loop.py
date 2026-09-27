@@ -27,7 +27,7 @@ import copy
 import json
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from types import MappingProxyType
 from typing import Any, Callable, Dict, List, Mapping, Optional, Protocol, Sequence, Tuple
@@ -57,7 +57,13 @@ from chanakya.contracts.approval import (
     ApprovalRequest,
     ApprovalStatus,
 )
-from chanakya.contracts.enums import Verdict
+from chanakya.contracts.enums import ModelEgress, Verdict
+from chanakya.contracts.tool_output_screening import (
+    TOOL_OUTPUT_SCREENING_VERSION,
+    is_sensitive_output_rejection,
+    rejection_message,
+    screen_tool_output,
+)
 from chanakya.contracts.evidence import Evidence
 from chanakya.contracts.investigation_context import InvestigationContext, InvestigationStatus
 from chanakya.contracts.finding import Finding, FindingValidationError
@@ -203,6 +209,15 @@ def _verify_context_data(assembled: AssembledContext, sources: Sequence["_Contex
         raise ContextSourceError("assembled context data differs from the Runtime-owned context sources")
 
 
+def _verify_source_egress(sources: Sequence["_ContextSource"]) -> None:
+    """Phase 15 (NX-INV-3): every Runtime-owned context source must come
+    from a capability whose Registry-declared egress is ALLOWED. Anything
+    else here is an invariant violation: fail closed, never drop and go on."""
+    for source in sources:
+        if source.model_egress is not ModelEgress.ALLOWED:
+            raise ContextSourceError("a context source is not egress-allowed for model context")
+
+
 class AgentProvider(Protocol):
     """The model boundary. ``next_turn`` is the minimal shape (in-process
     doubles). Phase 14: a *declared* provider (``AnthropicProvider``) also
@@ -228,6 +243,10 @@ class _ContextSource:
     source_kind: str
     content: Any
     content_hash: str
+    #: Phase 15: from the authorizing CapabilityEnvelope (Registry), never
+    #: from the handler, the result, parameters or the model.
+    capability: str = ""
+    model_egress: Optional[ModelEgress] = None
 
 
 def _is_declared_provider(agent: Any) -> bool:
@@ -462,6 +481,9 @@ class AgentLoopController:
         # kept or replayed).
         self._context_sources: Dict[str, List[_ContextSource]] = {}
         self._turn_sequences: Dict[str, int] = {}
+        # Phase 15 (NX-INV-3): tool_result_id -> the envelope that authorized
+        # it, recorded at dispatch; the only source of a result's egress.
+        self._result_envelopes: Dict[str, Any] = {}
 
     # -- public entry point ----------------------------------------------
 
@@ -569,6 +591,7 @@ class AgentLoopController:
         # investigation before the provider is reached.
         sources = self._context_window(investigation_id)
         try:
+            _verify_source_egress(sources)
             self._check_caller_results(sources, recent_tool_results)
         except ContextSourceError as exc:
             return self._reject_context_sources(investigation_id, exc)
@@ -754,6 +777,15 @@ class AgentLoopController:
         tool_result, step = result.tool_result, result.step_record
         if tool_result is None or step is None:
             return
+        # Phase 15: a screening rejection is never a context source (the
+        # model is not told anything about rejected output), and only a
+        # capability whose Registry-declared egress is ALLOWED may reach the
+        # model at all. No recorded envelope means no egress (fail closed).
+        if is_sensitive_output_rejection(tool_result.error_message):
+            return
+        envelope = self._result_envelopes.get(tool_result.tool_result_id)
+        if envelope is None or envelope.model_egress is not ModelEgress.ALLOWED:
+            return
         if result.outcome == TurnOutcome.STEP_COMPLETED and step.evidence_id:
             kind, evidence_id, content = SOURCE_KIND_EVIDENCE, step.evidence_id, tool_result.output
         elif result.outcome in (TurnOutcome.STEP_FAILED, TurnOutcome.STEP_TIMED_OUT):
@@ -764,7 +796,10 @@ class AgentLoopController:
         if content_hash is None:
             return  # unserializable content never becomes model context
         self._context_sources.setdefault(investigation_id, []).append(
-            _ContextSource(tool_result, step.step_id, evidence_id, kind, content, content_hash)
+            _ContextSource(
+                tool_result, step.step_id, evidence_id, kind, content, content_hash,
+                capability=envelope.capability, model_egress=envelope.model_egress,
+            )
         )
 
     @staticmethod
@@ -843,6 +878,8 @@ class AgentLoopController:
                     step_id=source.step_id,
                     evidence_id=source.evidence_id,
                     content_hash=source.content_hash,
+                    capability=source.capability,
+                    model_egress=source.model_egress.value if source.model_egress is not None else "",
                 )
                 for position, source in enumerate(sources)
             ),
@@ -1125,6 +1162,14 @@ class AgentLoopController:
                 # halted) while this attempt was executing — never retry
                 # a cancelled/halted investigation.
                 self._audit.dispatch_failed(investigation_id, tool_result, retry_scheduled=False, reason="investigation no longer running")
+                return result
+
+            if tool_result.status == ToolResultStatus.ERROR and is_sensitive_output_rejection(tool_result.error_message):
+                # Phase 15 (NX-INV-5): deterministic; retrying would re-collect
+                # the same sensitive output.
+                self._audit.dispatch_failed(
+                    investigation_id, tool_result, retry_scheduled=False, reason="sensitive_output_rejected"
+                )
                 return result
 
             if tool_result.status == ToolResultStatus.ERROR and is_envelope_violation(tool_result.error_message):
@@ -1422,6 +1467,7 @@ class AgentLoopController:
             return TurnResult(outcome=TurnOutcome.FAILED, step_record=step, detail=str(exc))
 
         step.set_tool_result_id(tool_result.tool_result_id)
+        self._result_envelopes[tool_result.tool_result_id] = envelope
 
         # Cancellation race-guard: the investigation may have been ended
         # by another caller while this (synchronous) dispatch was in
@@ -1439,6 +1485,33 @@ class AgentLoopController:
             )
 
         if tool_result.status == ToolResultStatus.SUCCESS:
+            # Phase 15 (NX-INV-1/2): THE tool-output sensitivity gate. It runs
+            # on the only path from a successful result to Evidence or model
+            # context, after the Tool Layer's envelope (JSON/size/schema)
+            # checks, over exactly the payload that would be persisted. A
+            # hit becomes an error result with a fixed code: no Evidence, no
+            # context source, no retry, nothing of the content kept.
+            evidence_payload = {
+                "output": tool_result.output,
+                "error_message": tool_result.error_message,
+                "raw_output": tool_result.raw_output,
+                "warnings": list(tool_result.warnings),
+            }
+            screening_code = screen_tool_output(evidence_payload)
+            if screening_code is not None:
+                tool_result = replace(
+                    tool_result,
+                    status=ToolResultStatus.ERROR,
+                    output=None,
+                    raw_output=None,
+                    warnings=(),
+                    error_message=rejection_message(screening_code),
+                )
+                del evidence_payload
+                step.transition(StepStatus.STEP_FAILED)
+                context.end_current_step()
+                return TurnResult(outcome=TurnOutcome.STEP_FAILED, step_record=step, tool_result=tool_result)
+
             step.transition(StepStatus.STEP_COMPLETED)
             self._audit.dispatch_completed(investigation_id, tool_result)
 
@@ -1468,6 +1541,9 @@ class AgentLoopController:
                     content_hash=_PENDING_STORE_ASSIGNMENT,
                     storage_ref=_PENDING_STORE_ASSIGNMENT,
                     classification=policy_decision.classification,
+                    # Phase 15: passed the screen above; nothing was redacted.
+                    redactions_applied=False,
+                    screening_version=TOOL_OUTPUT_SCREENING_VERSION,
                 )
                 # Phase 5.3: the actual tool-output content — kept OUT of
                 # the Evidence object itself (docs/CONTRACTS.md §7, still
@@ -1478,12 +1554,7 @@ class AgentLoopController:
                 # is pure data assembly, not hashing or storage; both of
                 # those remain EvidenceStore's exclusive responsibility
                 # (chanakya/evidence/store.py).
-                evidence_payload = {
-                    "output": tool_result.output,
-                    "error_message": tool_result.error_message,
-                    "raw_output": tool_result.raw_output,
-                    "warnings": list(tool_result.warnings),
-                }
+                # (Built and screened above, before this block.)
                 evidence_id = self._evidence_recorder.record(evidence, evidence_payload)
             except Exception as exc:
                 # docs/AGENT-RUNTIME.md §9: "the corresponding action is

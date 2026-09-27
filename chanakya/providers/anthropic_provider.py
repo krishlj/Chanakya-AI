@@ -159,6 +159,7 @@ class AnthropicProvider:
                 api_key=api_key,
                 base_url=config.effective_endpoint,
                 timeout=config.timeout_seconds,
+                max_retries=0,
                 http_client=anthropic.DefaultHttpxClient(
                     follow_redirects=False,
                     timeout=config.timeout_seconds,
@@ -169,6 +170,12 @@ class AnthropicProvider:
                 raise ValueError("provider client does not target the configured endpoint")
             if dict(getattr(client, "_custom_headers", None) or {}):
                 raise ValueError("provider client carries custom headers; refusing to send investigation data")
+            # Phase 15: one recorded turn = one provider send. The SDK's own
+            # retries (default 2) would re-send a recorded request unseen by
+            # the turn record; the Runtime already fails closed on provider
+            # errors, so no retry is needed here. Applied to injected clients
+            # too (same transport, retries off).
+            client = client.with_options(max_retries=0)
         self._client = client
         self._identity = ProviderIdentity(
             provider=config.provider,

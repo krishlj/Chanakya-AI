@@ -43,10 +43,19 @@ class AuditEventType(str, Enum):
     AGENT_TURN_REJECTED = "agent_turn_rejected"
 
 
-#: The version the Runtime emits since Phase 14. 1.0.0 streams (Phases 6-13)
-#: stay readable; the turn event types exist only from 1.1.0.
-AUDIT_EVENT_CONTRACT_VERSION = "1.1.0"
-SUPPORTED_AUDIT_EVENT_VERSIONS = frozenset({"1.0.0", AUDIT_EVENT_CONTRACT_VERSION})
+#: The version the Runtime emits. 1.0.0 streams (Phases 6-13) and 1.1.0
+#: streams (Phase 14) stay readable; the turn event types exist only from
+#: 1.1.0. 1.2.0 (Phase 15) adds ``model_egress`` to the policy_evaluated
+#: envelope summary and ``capability``/``model_egress`` to each manifest
+#: context entry, and means every Evidence record carries screening
+#: provenance.
+AUDIT_EVENT_CONTRACT_VERSION = "1.2.0"
+SUPPORTED_AUDIT_EVENT_VERSIONS = frozenset({"1.0.0", "1.1.0", AUDIT_EVENT_CONTRACT_VERSION})
+
+
+def version_tuple(version: str) -> tuple:
+    """``"1.2.0"`` -> ``(1, 2, 0)``, for ordering supported versions."""
+    return tuple(int(part) for part in version.split("."))
 AGENT_TURN_EVENT_TYPES = frozenset(
     {AuditEventType.AGENT_TURN_REQUESTED, AuditEventType.AGENT_TURN_RECEIVED, AuditEventType.AGENT_TURN_REJECTED}
 )

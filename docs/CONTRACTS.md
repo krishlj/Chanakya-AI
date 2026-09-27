@@ -415,7 +415,8 @@ step that produced it.
 | `storage_ref` | string | required | Pointer to the actual stored payload location |
 | `classification` | string (enum: `read_only`\|`state_changing`) | required | Copied from the Registry at capture time, so history remains accurate even if the Registry entry later changes |
 | `tags` | array\<string\> | optional | Free-form labels |
-| `redactions_applied` | boolean | optional | `true` if sensitive content was redacted before storage |
+| `redactions_applied` | boolean | optional | `true` if sensitive content was redacted before storage. Phase 15 never redacts: screened records carry `false` |
+| `screening_version` | string | optional (required from AuditEvent 1.2.0) | Phase 15: the tool-output screening policy (`chanakya-tool-output-screen/1.0.0`) the payload passed before storage. Absent means the record predates Phase 15, never "screened and clean". When present, `redactions_applied` must be `false` |
 
 **Validation requirements**
 - `content_hash` must match the stored payload — verified on read to
@@ -426,6 +427,17 @@ step that produced it.
 - All four traceability fields (`tool_request_id`, `tool_result_id`,
   `target_id`, `step_id`) are required — an `Evidence` record can always
   be traced back to exactly what produced it.
+
+**Phase 15 screening.** A successful tool output is screened for
+credential-shaped content before an `Evidence` record can exist. This
+covers every persisted payload field, at any depth, keys included. Output
+that fails is rejected as a whole: there is no Evidence, no context and no
+retry, and the error is `sensitive_output_rejected: <CODE>`. Nothing is
+redacted.
+- `screening_version` records which screen a stored record passed.
+- The production recorder refuses a record without the marker, or a
+  payload that fails the same screen.
+- Review re-screens stored payloads for AuditEvent 1.2.0 streams.
 
 **Security considerations**
 - Must never duplicate secrets from the underlying tool output; where
@@ -887,7 +899,19 @@ five existing event types carry additive, bounded facts, defined in
   validates these facts against closed shapes. They are a durable record,
   never an authorization input.
 
-**Version 1.1.0 (Phase 14).** The Runtime now emits every `AuditEvent`
+**Version 1.2.0 (Phase 15).** A minor version, because two recorded shapes
+gain fields:
+- the `policy_evaluated` envelope summary adds `model_egress`;
+- each `agent_turn_requested` context entry adds `capability` and
+  `model_egress`.
+
+It also means that every Evidence record of the stream carries
+`screening_version`. Older streams (1.0.0, 1.1.0) are still accepted with
+their own shapes. The Runtime writes a single version per stream, so Review
+flags a stream with mixed versions (`mixed_contract_versions`) and judges it
+by the highest version present.
+
+**Version 1.1.0 (Phase 14).** The Runtime emitted every `AuditEvent`
 under `contract_version` `1.1.0`, the version that adds the three agent turn
 event types. `1.0.0` streams (Phases 6–13) remain readable. A `1.0.0` event
 may not carry a turn event type, and an unrecognized version is rejected on
@@ -967,7 +991,7 @@ failed write halts the investigation). A provider exception is recorded as
 | `objective_hash` | hash | Of the objective (the text itself is already in `investigation_started`) |
 | `capability_catalog_hash` | hash | Of the catalog offered to the model |
 | `target_context_hash` / `environment_context_hash` | hash or null | Of the model-visible views; null when absent |
-| `context_entries` | array (≤ 5) | Ordered: `position`, `source` (`tool_result:<id>`), `source_kind` (`evidence` or `tool_result_error`), `tool_result_id`, `step_id`, `evidence_id` (evidence only), `content_hash` |
+| `context_entries` | array (≤ 5) | Ordered: `position`, `source` (`tool_result:<id>`), `source_kind` (`evidence` or `tool_result_error`), `tool_result_id`, `step_id`, `evidence_id` (evidence only), `content_hash`; from 1.2.0 also `capability` and `model_egress` (always `allowed`: an entry of any other egress cannot be recorded, so the turn halts) |
 | `provider` | object | `provider`, `model`, `endpoint`, `config_version`, `timeout_seconds`, `max_tokens`, `declared` |
 | `provider_request_hash` | hash | Canonical hash of the exact request structure sent (declared providers), or of the assembled context handed to an in-process provider |
 

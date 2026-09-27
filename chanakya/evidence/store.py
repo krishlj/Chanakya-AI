@@ -237,6 +237,10 @@ def _evidence_to_dict(evidence: Evidence) -> Dict[str, Any]:
     }
     if evidence.payload_hash is not None:
         data["payload_hash"] = evidence.payload_hash
+    # Phase 15: same rule as payload_hash — present only when set, so every
+    # pre-Phase-15 record keeps its exact hash input and still verifies.
+    if evidence.screening_version is not None:
+        data["screening_version"] = evidence.screening_version
     return data
 
 
@@ -301,6 +305,10 @@ def _dict_to_evidence(data: Mapping[str, Any]) -> Evidence:
     if payload_hash is not None and not isinstance(payload_hash, str):
         raise CorruptEvidenceError("stored evidence record has a malformed 'payload_hash' field")
 
+    screening_version = data.get("screening_version")
+    if "screening_version" in data and not isinstance(screening_version, str):
+        raise CorruptEvidenceError("stored evidence record has a malformed 'screening_version' field")
+
     try:
         return Evidence(
             evidence_id=data["evidence_id"],
@@ -318,6 +326,7 @@ def _dict_to_evidence(data: Mapping[str, Any]) -> Evidence:
             tags=tuple(tags),
             redactions_applied=redactions_applied,
             payload_hash=payload_hash,
+            screening_version=screening_version,
         )
     except (TypeError, ValueError) as exc:
         # Evidence.__post_init__ itself rejects a malformed field (e.g. an
