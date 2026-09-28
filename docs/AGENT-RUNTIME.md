@@ -2218,7 +2218,11 @@ ProviderConfig (trusted)
 - **Logging (`check_sdk_logging`).** Construction and every send fail
   closed if the `anthropic`, `httpx2` or `httpcore2` logger would emit
   DEBUG records, including when an application sets DEBUG globally. The
-  Runtime records this as `PROVIDER_FAILURE`.
+  Runtime records this as `PROVIDER_FAILURE`. *(Corrected in Phase 19:
+  checking these three loggers alone was not sufficient. A child logger
+  such as `anthropic._base_client` can be at DEBUG on its own (T-64). The
+  check now covers every logger in the namespaces; see the Phase 19
+  section.)*
 - **CLI refusal (defense in depth).** In addition to `ANTHROPIC_BASE_URL`,
   `ANTHROPIC_CUSTOM_HEADERS` and `ANTHROPIC_PROFILE`, the CLI refuses to
   start while any of `FORBIDDEN_TRANSPORT_ENVIRONMENT` is present:
@@ -2250,7 +2254,7 @@ ProviderConfig (trusted)
 |---|---|---|
 | P18-INV-1 | No environment variable changes the provider route; the transport has no proxy mounts. | `test_proxy_variable_is_refused_by_the_cli_and_cannot_route_the_transport` (6 variables), `test_no_proxy_manipulation_has_no_effect`, `test_sdk_default_client_mounts_environment_proxies_despite_trust_env`, `test_production_transport_is_explicit_isolated_and_verified` |
 | P18-INV-2 | The environment cannot replace the TLS trust roots. | `test_ssl_cert_file_is_refused_and_never_loaded`, `test_ssl_cert_dir_is_refused_and_never_loaded`, `test_a_client_with_a_custom_ca_context_is_rejected`, `test_an_unlisted_environment_variable_cannot_weaken_the_transport` |
-| P18-INV-3 | SDK/transport debug logging cannot emit investigation data. | `test_anthropic_log_is_refused_by_the_cli`, `test_debug_sdk_logger_fails_construction_closed`, `test_debug_logger_after_construction_fails_the_send_closed` |
+| P18-INV-3 | SDK/transport debug logging cannot emit investigation data. *(Enforced across the whole logger namespaces only from Phase 19, P19-INV-1..5.)* | `test_anthropic_log_is_refused_by_the_cli`, `test_debug_sdk_logger_fails_construction_closed`, `test_debug_logger_after_construction_fails_the_send_closed` |
 | P18-INV-4 | An insecure client, injected or tampered with, cannot enter the provider. | `test_insecure_injected_clients_are_rejected` (13 cases), `test_wrong_or_plaintext_endpoint_is_rejected`, `test_custom_sdk_headers_are_rejected`, `test_duck_typed_clients_cannot_be_verified_and_are_rejected`, `test_retries_are_normalized_to_zero_and_never_silently_reenabled`, `test_transport_tampered_after_verification_fails_the_send_closed`, `test_netrc_is_refused_and_never_honored`, `test_environment_auth_token_is_refused_and_never_sent` |
 | P18-INV-5 | 1.5.0 streams record and Review verifies the transport policy. | `test_phase18_streams_record_and_verify_the_transport_policy`, `test_review_flags_a_forged_transport_policy_without_echoing_it` (8 cases), `test_review_flags_a_missing_transport_policy`, `test_an_undeclared_provider_may_not_claim_a_transport`, `test_mixed_1_4_and_1_5_streams_are_flagged_and_judged_strictly`, `test_historical_1_4_streams_make_no_transport_claim_and_stay_consistent` |
 | P18-INV-6 | Transport metadata carries no authority. | `test_transport_policy_is_unreachable_from_authority`, `test_policy_decisions_are_identical_for_any_transport_policy` |
@@ -2264,6 +2268,82 @@ ProviderConfig (trusted)
   rather than open. Dependencies are not locked (T-23).
 - The policy records what was verified in this process. It is not an
   attestation that a remote party can check (T-18 applies to the log).
+
+#### Provider egress logging completeness (Phase 19)
+
+**Why.** Phase 18's `check_sdk_logging` tested only the `anthropic`,
+`httpx2` and `httpcore2` loggers themselves. The SDK emits the request
+(body included) through the child logger `anthropic._base_client`, and a
+child's own level overrides its parent's. With that child set to DEBUG, the
+check passed and the investigation objective reached the debug log. The
+manifest still recorded `sdk_debug_logging: false`, and Review reported the
+stream consistent (T-64). P18-INV-3 was not fully enforced.
+
+**Control.**
+- **Namespace-wide (`chanakya.providers.transport.check_sdk_logging`).**
+  Every existing `logging.Logger` in the `anthropic`, `httpx2` and
+  `httpcore2` namespaces is checked, read from the logging module's own
+  registry (`logging.Logger.manager.loggerDict`), at any depth.
+  - A namespace with no logger object yet is judged by the root logger,
+    which such a logger would inherit.
+  - `PlaceHolder` entries cannot emit and are skipped.
+- **Effective semantics.** Each logger is tested with `isEnabledFor(DEBUG)`,
+  the logging module's own emit gate. It applies the logger's effective
+  level (its own, else its nearest ancestor's, else root's), its
+  `disabled` flag and `logging.disable`. For example:
+  - parent INFO + child DEBUG is refused;
+  - root DEBUG with the namespaces at NOTSET is refused;
+  - root DEBUG with each namespace explicitly INFO is permitted;
+  - `logging.disable(DEBUG)` is permitted, because DEBUG records are then
+    genuinely suppressed.
+
+  Nothing is created, configured or disabled; unrelated application loggers
+  are not inspected.
+- **When.** At construction, before every request is prepared (so no
+  manifest is recorded while debug logging is on), and immediately before
+  every send. A logger created or changed after construction or after
+  preparation is caught at send.
+
+  The last actions before `messages.create` are the logging check and pure
+  transport verification. A refusal is `ProviderTransportError
+  (TRANSPORT_SDK_DEBUG_LOGGING)`, recorded by the Runtime as
+  `PROVIDER_FAILURE`, never retried. It names no logger and describes no
+  configuration.
+- **Truthful record (P19-INV-4).** `TransportPolicy.sdk_debug_logging` is
+  the value `check_sdk_logging` returns inside `verify_client`, not a
+  default. It is recorded only after the complete check passed, and every
+  send re-verifies it.
+
+  Review does not, and cannot, reconstruct a process's logger hierarchy
+  from the stored boolean. The guarantee is that the Runtime never sends a
+  request while the claim is false. A manifest followed by a
+  `provider_failure` outcome means no request was sent.
+- **INFO stays permitted.** For the installed versions (anthropic 1.7.0,
+  httpx2 2.13.0), INFO emits only `HTTP Request: POST <url> "<status>"`.
+  Tests capture every permitted configuration and prove no objective,
+  Evidence content, body or key appears.
+- **`ANTHROPIC_LOG`.** Still refused by the CLI (defense in depth); it is
+  not the control.
+
+| ID | Invariant | Tests (`tests/test_provider_logging_egress.py`) |
+|---|---|---|
+| P19-INV-1 | Any existing logger in the protected namespaces at DEBUG makes construction and every send fail closed. | `test_the_phase19_reproduction_is_refused`, `test_any_protected_child_at_debug_is_refused_at_construction_and_send` (6 loggers), `test_the_existing_sdk_logger_layout_is_pinned` |
+| P19-INV-2 | A child logger created (or changed) after construction or preparation is caught at send. | `test_a_child_logger_created_after_construction_is_caught_at_send`, `test_logging_changed_between_preparation_and_send_is_caught`, `test_the_final_logging_check_immediately_precedes_every_request`, `test_unsafe_logging_refuses_preparation` |
+| P19-INV-3 | Root, inheritance, `logging.disable`, the `disabled` flag and `dictConfig` are judged by actual emit behavior. | `test_root_debug_is_refused_when_protected_loggers_inherit_it`, `test_parent_debug_reaches_a_notset_child`, `test_effective_semantics_allow_root_debug_when_every_namespace_is_explicitly_info`, `test_a_namespace_with_no_logger_yet_is_judged_by_root`, `test_logging_disable_is_honored_as_the_logging_module_does`, `test_a_disabled_logger_flag_is_honored`, `test_dictconfig_enabling_debug_is_refused` |
+| P19-INV-4 | `sdk_debug_logging: false` is recorded only after the complete check passed, and never for a request sent while it is false. | `test_unsafe_logging_before_a_turn_produces_no_manifest_and_no_request`, `test_a_valid_turn_records_the_verified_logging_state`, `test_the_recorded_value_is_the_verified_value` |
+| P19-INV-5 | No objective, Evidence content, request body or API key appears in provider logs under any permitted configuration. | `test_permitted_logging_never_contains_request_content` (3 configurations), `test_full_runtime_turn_under_permitted_logging_leaks_nothing`, `test_a_malicious_handler_on_a_protected_logger_receives_nothing` |
+| P19-INV-6 | The logging policy carries no authority. | `test_logging_policy_carries_no_authority`, `test_a_logging_refusal_changes_no_policy_decision` |
+
+**Limitations.**
+- The check is in-process. It does not cover logging outside the Python
+  logging module: a monkeypatched `Logger` method, a custom logger class
+  that emits regardless of `isEnabledFor`, or OS-level capture of the
+  process. Those need code execution in the process.
+- Another thread that enables DEBUG between the final check and the SDK
+  call is not covered. The Runtime is synchronous.
+- A future SDK that logs request content outside these namespaces, or at
+  INFO, would not be caught. The layout is pinned by a test, and
+  dependencies are unlocked (T-23).
 
 **`RuntimeExecutionLimits`** — admin-controlled configuration (trusted,
 versioned, not Agent-writable), analogous to `PolicySet`.

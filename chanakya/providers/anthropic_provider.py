@@ -217,6 +217,12 @@ class AnthropicProvider:
         return self._identity
 
     def prepare_turn(self, assembled_context: AssembledContext) -> PreparedProviderRequest:
+        # Phase 19 (T-64): refused before the request (and its manifest)
+        # exists when SDK debug logging is already on; re-checked at send.
+        check_sdk_logging()
+        return self._prepare(assembled_context)
+
+    def _prepare(self, assembled_context: AssembledContext) -> PreparedProviderRequest:
         """Builds the exact request ``send_turn`` will send, and its
         canonical hash. The Runtime records the hash before sending."""
         payload = copy.deepcopy(dict(mapping.build_request_kwargs(assembled_context, self._config)))
@@ -231,9 +237,11 @@ class AnthropicProvider:
         request_kwargs = copy.deepcopy(dict(prepared.payload))
         if hash_value(request_kwargs) != prepared.request_hash:
             raise ValueError("prepared provider request does not match its recorded hash")
-        # Phase 18: re-checked at every send, before any byte leaves: SDK
-        # debug logging (which would copy the body) and the transport the
-        # recorded policy describes.
+        # Phase 18/19: re-checked at every send, immediately before the
+        # request, with nothing in between that could change them: SDK debug
+        # logging across the whole logger namespaces (which would copy the
+        # body), then the transport, whose verified policy (including the
+        # logging state) must still equal the recorded one.
         check_sdk_logging()
         verified = verify_client(self._client, endpoint=self._endpoint, expected_timeout=self._expected_timeout)
         if verified != self._identity.transport:

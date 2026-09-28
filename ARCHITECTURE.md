@@ -501,6 +501,13 @@ The log remains tamper-evident, not tamper-proof (T-18).
   `docs/AGENT-RUNTIME.md` "Provider transport environment isolation
   (Phase 18)".
 
+**Status (Phase 19):** SDK debug logging is checked across the whole
+`anthropic`/`httpx2`/`httpcore2` logger namespaces, children included, with
+effective-level semantics. The check runs at construction, before
+preparation and immediately before every send, so `sdk_debug_logging:
+false` in the manifest is true for every request sent. It does not claim
+that application logging in general is disabled.
+
 See `docs/AGENT-RUNTIME.md` "Durable authorization record and
 investigation review (Phase 12)".
 

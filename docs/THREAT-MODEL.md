@@ -1576,6 +1576,36 @@ boundary. **Turn records are forensic records and carry no authority.**
   verified, recorded transport. Status unchanged: PARTIALLY MITIGATED
   (`allowed` output leaves by design).
 
+### Candidate threats from Phase 19 (provider egress logging completeness)
+
+- **T-64: provider request-body egress through the SDK logger hierarchy**
+  (TB-2; extends T-63, T-22).
+  - *Attacker:* in-process logging configuration: application code, a
+    `logging.config` dict or file, or a library.
+  - *Before Phase 19:* Phase 18 checked only the `anthropic`, `httpx2` and
+    `httpcore2` loggers themselves. The SDK logs the request (body
+    included) through `anthropic._base_client`, whose own DEBUG level
+    overrides its parent's. The investigation objective reached the debug
+    log. The manifest recorded `sdk_debug_logging: false`, and Review
+    reported the stream consistent.
+  - *Controls (MITIGATED):*
+    - every logger in the three namespaces is checked with the logging
+      module's own emit gate (effective level, `logging.disable`,
+      `disabled`); a namespace with no logger yet is judged by root;
+    - the check runs at construction, before preparation and immediately
+      before every send;
+    - `sdk_debug_logging` records the verified value;
+    - a refusal sends nothing and is never retried (P19-INV-1..6).
+  - *Residual:* in-process only. Not covered: monkeypatched logging, custom
+    logger classes, another thread racing the final check, OS-level
+    capture, and a future SDK that logs content elsewhere or at INFO
+    (layout pinned by test; dependencies unlocked, T-23).
+- **T-63 (Phase 19 status).** Its logging aspect is MITIGATED from Phase 19
+  (namespace-wide control). Route, TLS trust and environment
+  authentication were mitigated in Phase 18.
+- **T-22 (Phase 19 addition).** Request content no longer leaves through
+  SDK/transport logging. Status unchanged: PARTIALLY MITIGATED.
+
 ---
 
 ## 9. Security controls (consolidated)

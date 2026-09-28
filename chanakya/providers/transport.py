@@ -25,8 +25,13 @@ The control is structural, not a denylist:
    query parameters, a bearer token, retries or an unbounded timeout. It
    returns the ``TransportPolicy`` that was verified, and only that is
    recorded.
-3. ``check_sdk_logging`` fails closed if the SDK or transport loggers would
-   emit DEBUG records (which include request bodies).
+3. ``check_sdk_logging`` fails closed if any logger in the SDK/transport
+   namespaces would emit a DEBUG record (the SDK's DEBUG records include the
+   request body). Phase 19 (T-64): the check covers every logger in the
+   namespaces, not only their roots, because a child logger's own level
+   overrides its parent's; it runs at construction, before every request is
+   prepared and immediately before every send, and its result is what
+   ``TransportPolicy.sdk_debug_logging`` records.
 
 The CLI's environment refusal list is defense in depth and operator intent;
 the transport stays isolated for variables it does not know about.
@@ -58,9 +63,12 @@ from chanakya.contracts.agent_turn import (
     TransportPolicy,
 )
 
-#: Loggers that emit request content at DEBUG (``anthropic`` logs request
-#: options including the body; ``httpx2``/``httpcore2`` log exchange details).
-SDK_LOGGERS = ("anthropic", "httpx2", "httpcore2")
+#: Logger namespaces whose DEBUG records can carry request content
+#: (``anthropic._base_client`` logs the request options, body included;
+#: ``httpx2``/``httpcore2`` log exchange details). Every logger *in* these
+#: namespaces is checked, not just these names (Phase 19, T-64).
+SDK_LOGGER_NAMESPACES = ("anthropic", "httpx2", "httpcore2")
+SDK_LOGGERS = SDK_LOGGER_NAMESPACES  # Phase 18 name, kept for compatibility
 
 #: The only default headers a verified HTTP client may carry (httpx2's own).
 #: Authentication is added per request by the SDK from the explicit API key.
@@ -113,12 +121,45 @@ def build_http_client(timeout_seconds: float) -> httpx2.Client:
     )
 
 
-def check_sdk_logging() -> None:
-    """Fails closed if an SDK/transport logger would emit DEBUG records
-    (``ANTHROPIC_LOG=debug`` or an application setting DEBUG globally)."""
-    for name in SDK_LOGGERS:
-        if logging.getLogger(name).isEnabledFor(logging.DEBUG):
+def _in_protected_namespace(name: str) -> bool:
+    return any(name == ns or name.startswith(ns + ".") for ns in SDK_LOGGER_NAMESPACES)
+
+
+def _protected_loggers() -> list:
+    """Every logger that could emit a provider/transport record right now, or
+    that a not-yet-created logger in the namespaces would inherit from.
+
+    - Every existing ``logging.Logger`` in the namespaces, children included
+      (``logging.Logger.manager.loggerDict`` is the logging module's own
+      registry; ``PlaceHolder`` entries cannot emit and are skipped).
+    - For a namespace with no logger object yet, the root logger: a logger
+      created there later inherits from root. (A logger created later with
+      its own level exists, and is checked, at the next check.)
+
+    Reads the registry only: nothing is created, configured or disabled."""
+    registry = logging.Logger.manager.loggerDict
+    loggers = []
+    for name, entry in list(registry.items()):
+        if isinstance(entry, logging.Logger) and _in_protected_namespace(name):
+            loggers.append(entry)
+    if any(not isinstance(registry.get(ns), logging.Logger) for ns in SDK_LOGGER_NAMESPACES):
+        loggers.append(logging.getLogger())
+    return loggers
+
+
+def check_sdk_logging() -> bool:
+    """Fails closed if any logger in the SDK/transport namespaces would emit a
+    DEBUG record; otherwise returns ``False``, the verified value of
+    ``TransportPolicy.sdk_debug_logging``.
+
+    ``Logger.isEnabledFor`` is the logging module's own emit gate: it applies
+    ``logging.disable``, the logger's ``disabled`` flag and its *effective*
+    level (its own level, else the nearest ancestor's, else root's). The
+    error never names a logger or describes the configuration."""
+    for logger in _protected_loggers():
+        if logger.isEnabledFor(logging.DEBUG):
             raise ProviderTransportError(TRANSPORT_SDK_DEBUG_LOGGING)
+    return False
 
 
 def _http_client_of(client: Any) -> httpx2.Client:
@@ -202,13 +243,15 @@ def verify_client(client: Any, *, endpoint: str, expected_timeout: Optional[floa
     if {name.lower() for name in http.headers} - _ALLOWED_HTTP_HEADERS or len(http.cookies) or len(http.params):
         raise ProviderTransportError(TRANSPORT_UNSAFE_HEADERS)
     tls_trust = _tls_trust(http)
-    return TransportPolicy(tls_trust=tls_trust)
+    # Phase 19 (P19-INV-4): the recorded logging state is the verified one.
+    return TransportPolicy(tls_trust=tls_trust, sdk_debug_logging=check_sdk_logging())
 
 
 __all__ = [
     "MAX_INJECTED_TIMEOUT_SECONDS",
     "ProviderTransportError",
     "SDK_LOGGERS",
+    "SDK_LOGGER_NAMESPACES",
     "build_http_client",
     "check_sdk_logging",
     "verify_client",
