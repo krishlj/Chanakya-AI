@@ -253,6 +253,28 @@ ToolResult → envelope (JSON, size, schema) → credential screen → Evidence 
   (`allowed` or `evidence_only`), carried in the `CapabilityEnvelope`. Only
   `allowed` output can become model context. The screen and the egress
   class carry no authority: Policy Gateway verdicts are unchanged.
+- **Scope.** This screen covers *successful* output only; failure text is
+  Phase 16.
+
+**Status (Phase 16):** failure text is Runtime-owned.
+
+```
+handler exception / timeout / late result → fixed Runtime code → backstop → audit + context
+```
+
+- **Signal, not text.** A handler signals failure or timeout; the Tool
+  Layer and Timeout Supervisor emit only fixed `tool_execution_failed:
+  <CODE>` messages. Exception text and class names are never recorded.
+- **Backstop.** The Runtime accepts a non-success result only if its
+  message is in the closed vocabulary, agrees with its status and carries
+  no other content. Anything else, from any executor, fails the
+  investigation closed. Nothing is stripped or redacted.
+- **Parity.** The durable audit log uses the same credential screen as
+  tool output.
+- **Review.** AuditEvent 1.3.0 streams are checked for Runtime-owned
+  failure text.
+- **Authority.** Failure codes carry none. See `docs/AGENT-RUNTIME.md`
+  "Failure-path output control (Phase 16)".
 
 ## 9. Security Tool Registry
 
@@ -443,6 +465,11 @@ Review reconstructs model influence and flags missing, duplicated or
 mismatched turn records. Nothing becomes resumable: the context window and
 turn sequence are still in-memory Runtime state.
 
+**Status (Phase 16):** contract `1.3.0`. `dispatch_failed.error_message`
+and failure context entries are Runtime-owned codes, and Review flags
+anything else without echoing it. The log's credential screen is the
+tool-output screen.
+
 See `docs/AGENT-RUNTIME.md` "Durable authorization record and
 investigation review (Phase 12)".
 
@@ -462,9 +489,11 @@ investigation review (Phase 12)".
 Errors are classified and handled at the layer where they occur, and
 always recorded:
 - **Tool execution failure** (e.g., a command errors out): captured as a
-  failed `ToolResult`, still written to Evidence and Audit, handed back to
-  the Agent as information it can reason about (e.g., try a different
-  approach).
+  failed `ToolResult`, recorded in the Audit Log (`dispatch_failed`; failed
+  results do not become Evidence), and handed back to the Agent as
+  information it can reason about (e.g., try a different approach). Since
+  Phase 16 the recorded and model-visible failure is a fixed Runtime code,
+  never the tool's own error text.
 - **Timeout**: enforced by the Runtime per step and per investigation;
   treated as a failure outcome for that step, not a crash.
 - **Policy denial**: not an error — a valid, expected `PolicyDecision`

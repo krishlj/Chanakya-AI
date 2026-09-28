@@ -1746,7 +1746,9 @@ this is not conversation memory, and nothing is resumable.
 - **Runtime-owned context (CT-INV-2).** The controller keeps, per
   investigation, the final tool result of each step it ran. It keeps a
   SUCCESS only when its Evidence was recorded, and a failed or timed-out
-  result as a `tool_result_error` source. The model sees the last
+  result as a `tool_result_error` source. Since Phase 16 the content of a
+  `tool_result_error` source is always a Runtime-owned failure code, never
+  handler text. The model sees the last
   `MAX_CONTEXT_ENTRIES` (5) of these, in order. `run_turn(...,
   recent_tool_results=...)` is kept only for compatibility and selects
   nothing. Every entry must be one of the current Runtime-owned results,
@@ -1918,6 +1920,123 @@ ToolResult → Tool Layer envelope (JSON → size → schema)
 - Both production capabilities are `allowed`: their output still leaves
   the host by design.
 - Evidence at rest is not encrypted or permission-restricted.
+- Phase 15 screens *successful* output only. Failure text is covered by
+  Phase 16, below.
+
+#### Failure-path output control (Phase 16)
+
+**Why.** Phase 15 screened *successful* tool output only. A failed or
+timed-out result carried handler-authored text: the executor built
+`error_message` from `f"{ExcClass}: {exc}"`, and the timeout supervisor used
+the `ToolExecutionTimedOut` message. That text was written to the durable
+audit log (`dispatch_failed.error_message`), became a `tool_result_error`
+context source sent to the provider, and was shown by Review. The audit
+log's own screen was weaker than the tool-output screen (no PEM header, no
+`…_TOKEN=` assignment). Reproduced with `ValueError("GITHUB_TOKEN=…")` and a
+PEM header in a handler exception (T-61).
+
+**Principle.** A handler *signals* failure, timeout or cancellation. The
+Runtime owns the text that crosses a boundary.
+
+```
+Handler ── success ──────────────→ envelope → Phase 15 screen → Evidence / egress
+   │
+   └─ exception / timeout / late result
+        → Runtime failure normalization → fixed code
+        → Runtime backstop (closed vocabulary, status agreement, no content)
+            REJECT → investigation fails closed (tool_failure_output_rejected)
+            PASS   → dispatch_failed (audit) + tool_result_error (context) → Review
+```
+
+- **Closed vocabulary (`chanakya.contracts.tool_failure`).** A non-success
+  `error_message` must be *exactly* one of `RUNTIME_FAILURE_MESSAGES`:
+  - `tool_execution_failed: <CODE>`, where the code is one of
+    `HANDLER_EXCEPTION`, `HANDLER_OUTPUT_MALFORMED`, `HANDLER_NOT_REGISTERED`,
+    `TARGET_NOT_REGISTERED`, `TARGET_TYPE_UNSUPPORTED`, `HANDLER_TIMEOUT`,
+    `STEP_TIMEOUT_EXCEEDED` or `CANCELLED`;
+  - `capability_envelope_violation: <CODE>` (Phase 11);
+  - `sensitive_output_rejected: <CODE>` (Phase 15).
+
+  There is no prefix matching and no repair. Timeout codes go with
+  `status=timeout`, and only they do. The longest message is 60
+  characters (bound: 96).
+- **Exception normalization.** `CapabilityDispatchExecutor` maps any
+  handler exception to `HANDLER_EXCEPTION`. It drops the message, the
+  arguments and the class name. Dispatch-table misses, unknown targets,
+  unsupported target types and non-mapping returns get their own codes;
+  the capability, target reference and returned type are not echoed. The
+  failure itself is kept (still `status=error`), so retry semantics are
+  unchanged.
+- **Timeout normalization (NX16-INV-3).** A handler's
+  `ToolExecutionTimedOut` becomes `HANDLER_TIMEOUT`. A measured overrun
+  becomes `STEP_TIMEOUT_EXCEEDED`. The signal's message and the measured
+  duration are never recorded.
+- **Cancellation.** A result that arrives after the investigation ended is
+  discarded, as before (RT-INV-9). It is now replaced by a Runtime-owned
+  `CANCELLED` error result, so neither its output nor its text is carried
+  in the returned `TurnResult`.
+- **Runtime backstop (NX16-INV-2).** `AgentLoopController._execute_once`
+  checks every non-success result, whatever executor produced it, with
+  `failure_result_problem`. The message must be in the vocabulary, agree
+  with the status, and the result must carry no `output`, `raw_output` or
+  `warnings`. A violation fails the investigation closed
+  (`tool_failure_output_rejected`, details `{"code": <PROBLEM>}`). It
+  happens before `dispatch_failed`, a context source or a retry. The text
+  is never stripped, truncated, redacted or recorded. An executor that
+  raises still reaches the existing backstop
+  (`unhandled_runtime_exception`), but with the fixed
+  `ToolExecutorRaisedError` in place of its exception text.
+- **Defense in depth.**
+  - `AuditEmitter.dispatch_failed` refuses a message outside the vocabulary
+    (`AuditSinkError`, fixed code), so the text is never persisted.
+  - `_remember_context_source` refuses a failure source that is not
+    Runtime-owned.
+  - Every turn re-checks `tool_result_error` sources before the provider
+    is called (`context_source_rejected`).
+- **Audit screening parity (NX16-INV-4).** `FilesystemAuditLog` screens
+  `details` with `screen_tool_output`, the Phase 15 function, over every
+  key and string value, bounded and iterative. Undecidable details are
+  rejected. The fact builders (`chanakya.contracts.audit_details`) use the
+  same canonical predicates (`is_credential_shaped_value`,
+  `is_credential_shaped_key`). There is no separate audit regex.
+- **Review (NX16-INV-5).** For AuditEvent 1.3.0 streams, Review checks two
+  things against the vocabulary and the recorded status: every
+  `dispatch_failed.error_message`, and the failure text behind every
+  `tool_result_error` context entry. Violations are flagged
+  (`dispatch_failure_text_invalid`, `turn_context_failure_text_invalid`)
+  and withheld: the review and `--review` output say "withheld" and never
+  echo the text.
+  - Older streams may hold free-form failure text. It is shown, except
+    credential-shaped, oversized or control-character text, which is
+    withheld without an anomaly because it predates the control.
+  - A stream with 1.2.0 and 1.3.0 events is flagged
+    `mixed_contract_versions` and judged as 1.3.0.
+- **Authority (NX16-INV-6).** Failure codes are data. The Policy Gateway,
+  approval, dispatch authorization, intake, the Registry, the Risk Engine
+  and the Retry Controller never reference them. Retry eligibility still
+  uses `status` and the existing envelope/screening predicates.
+
+| ID | Invariant | Tests (`tests/test_failure_path_output.py`) |
+|---|---|---|
+| NX16-INV-1 | Every non-success ToolResult that reaches `dispatch_failed`, context, Review or the CLI has an `error_message` from the closed Runtime vocabulary and contains no handler-supplied substring. | `test_t61_handler_exception_never_reaches_audit_context_provider_review_or_cli`, `test_handler_exception_text_never_crosses_any_boundary`, `test_credential_shaped_exception_class_name_is_not_visible`, `test_t61_live_cli_output_shows_only_the_fixed_code`, `test_no_production_path_builds_failure_text_from_exceptions`, `test_executor_never_formats_exceptions` |
+| NX16-INV-2 | The vocabulary is enforced by the Runtime, not only the executor. An injected executor returning arbitrary failure text fails closed; the text never reaches audit, context or provider. | `test_injected_executor_failure_text_fails_closed`, `test_executor_that_raises_fails_closed_without_its_text`, `test_retry_attempt_with_injected_raw_text_fails_closed`, `test_cancellation_race_result_is_replaced_by_the_cancelled_code`, `test_a_failure_source_with_raw_text_in_runtime_state_fails_closed`, `test_audit_emitter_refuses_raw_failure_text` |
+| NX16-INV-3 | Handler timeout signals never propagate their message; timeouts use a fixed Runtime code. | `test_malicious_timeout_message_becomes_the_fixed_timeout_code`, `tests/test_timeout_supervisor.py` |
+| NX16-INV-4 | The durable audit log rejects every string the canonical predicate rejects; audit and tool-output screening share one predicate. | `test_audit_log_screen_equals_the_canonical_predicate`, `test_weakening_the_audit_predicate_is_detected`, `test_audit_fact_builders_use_the_canonical_predicate`, `test_single_predicate_no_local_copies`, `test_audit_log_rejects_unscreenable_details` |
+| NX16-INV-5 | Review of 1.3.0 streams flags invalid `dispatch_failed.error_message` and invalid `tool_result_error` content, without echoing it. | `test_review_flags_forged_failure_text_and_never_echoes_it`, `test_review_flags_status_mismatch_and_oversized_text`, `test_mixed_version_downgrade_cannot_relax_failure_checks`, `test_historical_streams_keep_their_semantics`, `test_review_of_a_phase16_stream_is_consistent` |
+| NX16-INV-6 | Error codes carry no authority: retry eligibility, policy, approval, authorization and risk never use handler text or screening state. | `test_failure_vocabulary_is_unreachable_from_authorization`, `test_failure_codes_change_no_policy_approval_or_risk` |
+
+**Limitations.**
+- Diagnostics are coarser: the handler's own message is not recorded
+  anywhere. Debugging a handler needs a local reproduction.
+- The canonical predicate is pattern-based (T-20 residual). For example,
+  bare lower-case `key=value` is not a credential pattern. Parity means
+  the audit log is never weaker than tool-output screening, not that
+  either is complete.
+- A local attacker who rewrites the whole chain as a homogeneous 1.2.0
+  stream makes it look historical (T-18). Credential-shaped historical text
+  is still withheld from display.
+- Other Runtime-originated `detail` strings in `error`/`investigation_halted`
+  events come from Runtime components, not handlers, and are unchanged.
 
 **`RuntimeExecutionLimits`** — admin-controlled configuration (trusted,
 versioned, not Agent-writable), analogous to `PolicySet`.

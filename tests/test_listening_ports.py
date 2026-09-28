@@ -373,7 +373,8 @@ def test_unsupported_platform_becomes_an_error_tool_result():
     executor._handlers[CAP] = ListeningPortsHandler(platform="darwin")
     result = executor.execute(_instruction())
     assert result.status == ToolResultStatus.ERROR and result.output is None
-    assert "UnsupportedPlatformError" in result.error_message
+    # Phase 16: the exception class and message are not echoed.
+    assert result.error_message == "tool_execution_failed: HANDLER_EXCEPTION"
 
 
 def _instruction(parameters=None) -> DispatchInstruction:

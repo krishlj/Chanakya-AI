@@ -48,11 +48,21 @@ What it checks:
    stream with several is flagged (``mixed_contract_versions``) and judged
    by the strictest (highest) version it contains, so downgrading the first
    event cannot relax any check.
+8. **Failure-path text (Phase 16, NX16-INV-5).** For streams written under
+   AuditEvent 1.3.0, every ``dispatch_failed.error_message`` and every
+   ``tool_result_error`` context entry must be a Runtime-owned failure
+   message consistent with its status (``chanakya.contracts.tool_failure``).
+   Anything else is flagged (``dispatch_failure_text_invalid``,
+   ``turn_context_failure_text_invalid``) and withheld from the review: it
+   is never echoed. In older streams free-form failure text is expected and
+   is shown, except credential-shaped or control-character text, which is
+   withheld (without an anomaly: it predates the control).
 
 Anomalies are fixed codes plus, at most, an identifier.
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional
 
 from chanakya.audit.log import CorruptAuditLogError, InvalidAuditIdentifierError
@@ -68,7 +78,9 @@ from chanakya.contracts.agent_turn import (
 )
 from chanakya.contracts.audit_details import validate_details
 from chanakya.contracts.audit_event import version_tuple
+from chanakya.contracts.tool_failure import MAX_FAILURE_MESSAGE_CHARS, failure_message_problem
 from chanakya.contracts.tool_output_screening import (
+    is_credential_shaped_value,
     is_supported_screening_version,
     screen_tool_output,
 )
@@ -91,6 +103,9 @@ from .models import (
 )
 
 _REVIEW_ASSESSED_AT = "review"
+#: Longest historical (pre-1.3.0) failure text Review will display.
+_MAX_HISTORICAL_FAILURE_TEXT = 1000
+_CONTROL_CHARACTERS = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 _RISK_COMPARED = (
     "risk_assessment_id", "investigation_id", "finding_refs", "evidence_refs", "severity", "confidence",
     "scoring_method", "rule_ids", "assessed_by", "rationale",
@@ -114,6 +129,10 @@ class _Builder:
         # Phase 14: model-turn replay state.
         self.turn_era = False
         self.egress_era = False
+        self.failure_era = False
+        # Phase 16: the recorded failure text per tool request, used only to
+        # compare hashes; never exposed in the review.
+        self.failure_texts: Dict[str, Any] = {}
         self.turns: Dict[str, Dict[str, Any]] = {}
         self.pending_turn: Optional[str] = None
         self.last_turn_sequence = 0
@@ -132,7 +151,7 @@ class _Builder:
         """Phase 15: one version per stream. Mixed versions are an anomaly,
         and the strictest (highest) version present decides which records
         are required: turn records from 1.1.0, egress and screening
-        provenance from 1.2.0."""
+        provenance from 1.2.0, Runtime-owned failure text from 1.3.0."""
         versions = set()
         for record in records:
             try:
@@ -144,6 +163,7 @@ class _Builder:
         strictest = max(versions) if versions else (1, 0, 0)
         self.turn_era = strictest >= (1, 1, 0)
         self.egress_era = strictest >= (1, 2, 0)
+        self.failure_era = strictest >= (1, 3, 0)
 
     def replay(self, records) -> None:
         for index, record in enumerate(records):
@@ -306,6 +326,7 @@ class _Builder:
         request["dispatch"] = dict(
             resolved_timeout_seconds=details["resolved_timeout_seconds"],
             max_output_bytes=details["max_output_bytes"], status=None, tool_result_id=None, error_message=None,
+            error_message_withheld=False,
         )
 
     def _on_dispatch_result(self, ids, details, failed: bool) -> None:
@@ -319,10 +340,32 @@ class _Builder:
         trid = ids.get("tool_result_id")
         dispatch["tool_result_id"] = trid
         dispatch["status"] = details.get("status") if isinstance(details.get("status"), str) else None
-        if failed and isinstance(details.get("error_message"), str):
-            dispatch["error_message"] = details["error_message"]
+        if failed:
+            self._record_failure_text(tid, dispatch, details.get("error_message"))
         if isinstance(trid, str):
             self.results[trid] = tid
+
+    def _record_failure_text(self, tid: Any, dispatch: Dict[str, Any], text: Any) -> None:
+        """Phase 16 (NX16-INV-5). Never echoes rejected text: it is kept only
+        for hash comparison, and the review shows it as withheld."""
+        self.failure_texts[tid] = text
+        if self.failure_era:
+            if failure_message_problem(dispatch["status"], text) is not None:
+                self.flag("dispatch_failure_text_invalid", tid)
+                dispatch["error_message_withheld"] = True
+            else:
+                dispatch["error_message"] = text
+            return
+        if not isinstance(text, str):
+            return
+        if (
+            len(text) > _MAX_HISTORICAL_FAILURE_TEXT
+            or _CONTROL_CHARACTERS.search(text)
+            or is_credential_shaped_value(text)
+        ):
+            dispatch["error_message_withheld"] = True
+        else:
+            dispatch["error_message"] = text
 
     def _on_dispatch_completed(self, index, ids, details) -> None:
         self._on_dispatch_result(ids, details, failed=False)
@@ -450,15 +493,21 @@ class _Builder:
                 if declared != entry["model_egress"]:
                     self.flag("turn_context_egress_mismatch", turn_id)
             dispatch = request["dispatch"] or {}
+            failure_text = self.failure_texts.get(request["tool_request_id"])
             if entry["source_kind"] == SOURCE_KIND_EVIDENCE:
                 if request["evidence_id"] != entry["evidence_id"]:
                     self.flag("turn_context_evidence_mismatch", turn_id)
                 else:
                     self.context_evidence.append((turn_id, entry["evidence_id"], entry["content_hash"]))
-            elif dispatch.get("status") in (None, "success") or not isinstance(dispatch.get("error_message"), str):
+            elif dispatch.get("status") in (None, "success") or not isinstance(failure_text, str):
                 self.flag("turn_context_source_mismatch", turn_id)
-            elif hash_json_normalized(dispatch["error_message"]) != entry["content_hash"]:
-                self.flag("turn_context_hash_mismatch", turn_id)
+            else:
+                # Phase 16 (NX16-INV-5): in a 1.3.0 stream the failure text
+                # the model was shown must be Runtime-owned.
+                if self.failure_era and failure_message_problem(dispatch.get("status"), failure_text) is not None:
+                    self.flag("turn_context_failure_text_invalid", turn_id)
+                if hash_json_normalized(failure_text) != entry["content_hash"]:
+                    self.flag("turn_context_hash_mismatch", turn_id)
 
     def _on_turn_outcome(self, kind: str, ids, details) -> None:
         subject = ids.get("agent_turn_id")

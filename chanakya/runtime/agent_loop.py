@@ -58,6 +58,12 @@ from chanakya.contracts.approval import (
     ApprovalStatus,
 )
 from chanakya.contracts.enums import ModelEgress, Verdict
+from chanakya.contracts.tool_failure import (
+    CANCELLED as FAILURE_CANCELLED,
+    failure_message,
+    failure_result_problem,
+    is_runtime_failure_message,
+)
 from chanakya.contracts.tool_output_screening import (
     TOOL_OUTPUT_SCREENING_VERSION,
     is_sensitive_output_rejection,
@@ -103,6 +109,7 @@ from .evidence import EvidenceRecorder, StubEvidenceRecorder
 from .exceptions import (
     AuditSinkError,
     ContextSourceError,
+    ToolExecutorRaisedError,
     ProviderContractError,
     DispatchPreconditionError,
     EnvironmentContextScopeError,
@@ -207,6 +214,15 @@ def _verify_context_data(assembled: AssembledContext, sources: Sequence["_Contex
     actual = tuple((entry.source, entry.content) for entry in assembled.data)
     if actual != expected:
         raise ContextSourceError("assembled context data differs from the Runtime-owned context sources")
+
+
+def _verify_failure_sources(sources: Sequence["_ContextSource"]) -> None:
+    """Phase 16 (NX16-INV-1/2): a ``tool_result_error`` context source may
+    carry only a Runtime-owned failure message. Anything else here is an
+    invariant violation: fail closed, never strip the text and go on."""
+    for source in sources:
+        if source.source_kind == SOURCE_KIND_TOOL_RESULT_ERROR and not is_runtime_failure_message(source.content):
+            raise ContextSourceError("a failure context source is not Runtime-owned text")
 
 
 def _verify_source_egress(sources: Sequence["_ContextSource"]) -> None:
@@ -591,6 +607,7 @@ class AgentLoopController:
         # investigation before the provider is reached.
         sources = self._context_window(investigation_id)
         try:
+            _verify_failure_sources(sources)
             _verify_source_egress(sources)
             self._check_caller_results(sources, recent_tool_results)
         except ContextSourceError as exc:
@@ -789,6 +806,11 @@ class AgentLoopController:
         if result.outcome == TurnOutcome.STEP_COMPLETED and step.evidence_id:
             kind, evidence_id, content = SOURCE_KIND_EVIDENCE, step.evidence_id, tool_result.output
         elif result.outcome in (TurnOutcome.STEP_FAILED, TurnOutcome.STEP_TIMED_OUT):
+            # Phase 16 (NX16-INV-1): _execute_once already rejected any
+            # failure text that is not Runtime-owned; re-checked here so no
+            # other path can add one.
+            if failure_result_problem(tool_result) is not None:
+                raise ContextSourceError("a failure result with text that is not Runtime-owned cannot become context")
             kind, evidence_id, content = SOURCE_KIND_TOOL_RESULT_ERROR, None, tool_result.error_message
         else:
             return
@@ -1386,6 +1408,21 @@ class AgentLoopController:
             approval_decision=approval_decision,
         )
 
+    @staticmethod
+    def _cancelled_result(discarded: ToolResult) -> ToolResult:
+        """Phase 16: the Runtime-owned stand-in for a result that arrived
+        after the investigation ended. Only identifiers are kept."""
+        return ToolResult(
+            tool_result_id=discarded.tool_result_id,
+            contract_version=discarded.contract_version,
+            tool_request_id=discarded.tool_request_id,
+            capability=discarded.capability,
+            status=ToolResultStatus.ERROR,
+            started_at=discarded.started_at,
+            completed_at=discarded.completed_at,
+            error_message=failure_message(FAILURE_CANCELLED),
+        )
+
     def _execute_once(
         self,
         investigation_id: str,
@@ -1465,6 +1502,12 @@ class AgentLoopController:
                 investigation_id, reason="dispatch_precondition_violation", details={"detail": str(exc)}
             )
             return TurnResult(outcome=TurnOutcome.FAILED, step_record=step, detail=str(exc))
+        except Exception:
+            # Phase 16 (NX16-INV-1): an executor that raises (rather than
+            # returning a ToolResult) still ends in the existing fail-closed
+            # backstop, but its exception text never reaches the audit log,
+            # the CLI or the investigation's error state.
+            raise ToolExecutorRaisedError("the tool executor raised; its exception text is withheld") from None
 
         step.set_tool_result_id(tool_result.tool_result_id)
         self._result_envelopes[tool_result.tool_result_id] = envelope
@@ -1477,12 +1520,30 @@ class AgentLoopController:
         if current_status != InvestigationStatus.RUNNING:
             step.transition(StepStatus.STEP_FAILED)
             context.end_current_step()
+            # Phase 16: whatever came back (output or failure text) is
+            # discarded and replaced by a Runtime-owned CANCELLED result.
             return TurnResult(
                 outcome=TurnOutcome.CANCELLED,
                 step_record=step,
-                tool_result=tool_result,
+                tool_result=self._cancelled_result(tool_result),
                 detail="investigation ended during execution; result discarded",
             )
+
+        if tool_result.status != ToolResultStatus.SUCCESS:
+            # Phase 16 (NX16-INV-2): THE failure-path gate. The Runtime, not
+            # the executor, decides which failure text may cross a boundary:
+            # only the closed Runtime vocabulary, consistent with the status,
+            # with no other content. Anything else fails the investigation
+            # closed before dispatch_failed, a context source or a retry.
+            problem = failure_result_problem(tool_result)
+            if problem is not None:
+                del tool_result
+                step.transition(StepStatus.STEP_FAILED)
+                context.end_current_step()
+                self._investigations.fail(
+                    investigation_id, reason="tool_failure_output_rejected", details={"code": problem}
+                )
+                return TurnResult(outcome=TurnOutcome.FAILED, step_record=step, detail=f"tool_failure_output_rejected: {problem}")
 
         if tool_result.status == ToolResultStatus.SUCCESS:
             # Phase 15 (NX-INV-1/2): THE tool-output sensitivity gate. It runs

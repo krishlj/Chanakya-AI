@@ -240,7 +240,7 @@ long-term store.
 | `started_at` | string (timestamp) | required | Execution start |
 | `completed_at` | string (timestamp) | required | Execution end (must be ≥ `started_at`) |
 | `output` | object | required if `status` = `success` | Normalized structured output, shape defined per capability |
-| `error_message` | string | optional | Present when `status` ≠ `success` |
+| `error_message` | string | optional | Present when `status` ≠ `success`. Phase 16: exactly one Runtime-owned failure message (`chanakya.contracts.tool_failure.RUNTIME_FAILURE_MESSAGES`: `tool_execution_failed: <CODE>`, `capability_envelope_violation: <CODE>`, `sensitive_output_rejected: <CODE>`), consistent with `status`. Never handler, exception or target text; a non-success result also carries no `output`, `raw_output` or `warnings` |
 | `exit_code` | integer | optional | Present for tools with a process exit code |
 | `raw_output` | string | optional | Original, unmodified tool output kept for forensic completeness, subject to redaction (see Security considerations) |
 | `warnings` | array\<string\> | optional | Non-fatal issues encountered during execution |
@@ -898,6 +898,16 @@ five existing event types carry additive, bounded facts, defined in
 - **Review.** The read-only Investigation Review (`chanakya/review/`)
   validates these facts against closed shapes. They are a durable record,
   never an authorization input.
+
+**Version 1.3.0 (Phase 16).** A minor version, because the meaning of a
+recorded field narrows: every `dispatch_failed.error_message` and every
+failure text behind a `tool_result_error` context entry is a Runtime-owned
+failure message (`chanakya.contracts.tool_failure`), consistent with the
+recorded status. No shape changes. Older streams (1.0.0–1.2.0) may hold
+free-form failure text and are still accepted. Review flags invalid failure
+text in 1.3.0 streams (`dispatch_failure_text_invalid`,
+`turn_context_failure_text_invalid`) without echoing it, and judges a mixed
+stream by its highest version.
 
 **Version 1.2.0 (Phase 15).** A minor version, because two recorded shapes
 gain fields:

@@ -125,7 +125,7 @@ def test_retry_receives_a_fresh_independent_policy_decision(
     def flaky_then_success(instruction: DispatchInstruction):
         attempts["count"] += 1
         if attempts["count"] == 1:
-            return make_tool_result(instruction.tool_request_id, instruction.capability, status=ToolResultStatus.FAILURE, error_message="transient")
+            return make_tool_result(instruction.tool_request_id, instruction.capability, status=ToolResultStatus.FAILURE, error_message="tool_execution_failed: HANDLER_EXCEPTION")
         return make_tool_result(instruction.tool_request_id, instruction.capability, status=ToolResultStatus.SUCCESS)
 
     executor = FakeToolExecutor(result_factory=flaky_then_success)
@@ -160,7 +160,7 @@ def test_retry_count_is_bounded_then_step_fails(
 
     executor = FakeToolExecutor(
         result_factory=lambda instruction: make_tool_result(
-            instruction.tool_request_id, instruction.capability, status=ToolResultStatus.FAILURE, error_message="always fails"
+            instruction.tool_request_id, instruction.capability, status=ToolResultStatus.FAILURE, error_message="tool_execution_failed: HANDLER_EXCEPTION"
         )
     )
     controller = AgentLoopController(investigation_manager, governor, gateway, executor, sleep=no_sleep)
@@ -224,7 +224,7 @@ def test_failed_execution_cannot_silently_become_successful_completion(
     """M."""
     executor = FakeToolExecutor(
         result_factory=lambda instruction: make_tool_result(
-            instruction.tool_request_id, instruction.capability, status=ToolResultStatus.FAILURE, error_message="permanent"
+            instruction.tool_request_id, instruction.capability, status=ToolResultStatus.FAILURE, error_message="tool_execution_failed: HANDLER_EXCEPTION"
         )
     )
     controller = AgentLoopController(investigation_manager, resource_governor, gateway, executor, sleep=no_sleep)

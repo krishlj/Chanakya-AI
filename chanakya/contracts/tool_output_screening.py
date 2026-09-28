@@ -72,8 +72,21 @@ def _credential_shaped(text: str) -> bool:
     )
 
 
-def _credential_shaped_value(text: str) -> bool:
+def is_credential_shaped_value(text: str) -> bool:
+    """Phase 16: THE canonical credential predicate for a string value.
+    Tool output, the durable audit log (through ``screen_tool_output``) and
+    the audit fact builders (``chanakya.contracts.audit_details``) all use
+    it, so none of them is weaker than another (NX16-INV-4)."""
     return _credential_shaped(text) or bool(_ENV_ASSIGNMENT_PATTERN.search(text))
+
+
+def is_credential_shaped_key(key: str) -> bool:
+    """Phase 16: the canonical predicate for a mapping key. A key such as
+    ``password`` carries a credential on its own."""
+    return _credential_shaped(key) or _credential_shaped(f"{key}=x")
+
+
+_credential_shaped_value = is_credential_shaped_value
 
 
 def screen_tool_output(content: Any, *, max_bytes: int = MAX_SCREEN_BYTES) -> Optional[str]:
@@ -108,7 +121,7 @@ def screen_tool_output(content: Any, *, max_bytes: int = MAX_SCREEN_BYTES) -> Op
                         return OUTPUT_UNSCREENABLE
                     # A key such as "password" carries a credential on its own
                     # (the same rule the Phase 12 parameter screen applies).
-                    if _credential_shaped(key) or _credential_shaped(f"{key}=x"):
+                    if is_credential_shaped_key(key):
                         return CREDENTIAL_SHAPED_KEY
                     stack.append((child, depth + 1))
             elif isinstance(item, (list, tuple)):
@@ -152,6 +165,8 @@ __all__ = [
     "SENSITIVE_OUTPUT_PREFIX",
     "SUPPORTED_SCREENING_VERSIONS",
     "TOOL_OUTPUT_SCREENING_VERSION",
+    "is_credential_shaped_key",
+    "is_credential_shaped_value",
     "is_sensitive_output_rejection",
     "is_supported_screening_version",
     "rejection_message",

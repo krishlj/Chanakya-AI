@@ -78,6 +78,10 @@ class DispatchRecord:
     status: Optional[str] = None        # ToolResult status, None if no completion was recorded
     tool_result_id: Optional[str] = None
     error_message: Optional[str] = None
+    #: Phase 16: True when recorded failure text was not shown because it is
+    #: not Runtime-owned (1.3.0 streams, also an anomaly) or, in an older
+    #: stream, credential-shaped, oversized or carrying control characters.
+    error_message_withheld: bool = False
 
 
 @dataclass(frozen=True)

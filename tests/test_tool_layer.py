@@ -367,14 +367,17 @@ def test_a1_unknown_capability_returns_error_result_not_an_exception(target_regi
     executor = CapabilityDispatchExecutor(target_registry, {})
     result = executor.execute(make_instruction(capability="does_not_exist"))
     assert result.status == ToolResultStatus.ERROR
-    assert "does_not_exist" in result.error_message
+    # Phase 16: a fixed Runtime code; the requested name is not echoed.
+    assert result.error_message == "tool_execution_failed: HANDLER_NOT_REGISTERED"
+    assert "does_not_exist" not in result.error_message
 
 
 def test_a2_unregistered_target_returns_error_result():
     executor = build_tool_executor(TargetRegistry([]))
     result = executor.execute(make_instruction(target_ref="ghost-target"))
     assert result.status == ToolResultStatus.ERROR
-    assert "ghost-target" in result.error_message
+    assert result.error_message == "tool_execution_failed: TARGET_NOT_REGISTERED"
+    assert "ghost-target" not in result.error_message
 
 
 def test_a3_unsupported_target_type_rejected_by_executor_defense_in_depth(other_type_target):
@@ -384,14 +387,17 @@ def test_a3_unsupported_target_type_rejected_by_executor_defense_in_depth(other_
     executor = build_tool_executor(TargetRegistry([other_type_target]))
     result = executor.execute(make_instruction(target_ref="target-other-01"))
     assert result.status == ToolResultStatus.ERROR
-    assert "cloud_vm" in result.error_message
+    assert result.error_message == "tool_execution_failed: TARGET_TYPE_UNSUPPORTED"
+    assert "cloud_vm" not in result.error_message
 
 
 def test_a4_handler_exception_is_normalized_never_propagates(target_registry):
     executor = CapabilityDispatchExecutor(target_registry, {"x": RaisingHandler(RuntimeError("boom"))})
     result = executor.execute(make_instruction(capability="x"))
     assert result.status == ToolResultStatus.ERROR
-    assert "boom" in result.error_message
+    # Phase 16 (T-61): the handler's exception text is never echoed.
+    assert result.error_message == "tool_execution_failed: HANDLER_EXCEPTION"
+    assert "boom" not in result.error_message and "RuntimeError" not in result.error_message
 
 
 def test_a5_tool_execution_timed_out_propagates_unchanged(target_registry):
@@ -407,7 +413,7 @@ def test_a6_non_mapping_handler_output_rejected_as_malformed(target_registry):
     executor = CapabilityDispatchExecutor(target_registry, {"x": NonMappingHandler()})
     result = executor.execute(make_instruction(capability="x"))
     assert result.status == ToolResultStatus.ERROR
-    assert "non-mapping" in result.error_message
+    assert result.error_message == "tool_execution_failed: HANDLER_OUTPUT_MALFORMED"
 
 
 def test_a7_handler_receives_only_target_and_parameters(target_registry, local_host_target):

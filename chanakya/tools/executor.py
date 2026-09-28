@@ -34,6 +34,14 @@ Security boundary (Phase 5.1 design report §2):
   an unhandled exception reaching ``AgentLoopController``'s fail-closed
   backstop, and must never be treated as an implicit authorization of
   anything.
+- Phase 16 (T-61): a handler *signals* failure; it never writes the
+  failure text. Every error result here carries one fixed
+  ``tool_execution_failed: <CODE>`` message
+  (``chanakya.contracts.tool_failure``). The exception's message,
+  arguments and class name, the target reference and the returned type
+  are never echoed. The Runtime re-checks every non-success result against
+  the same closed vocabulary (NX16-INV-2), so an injected executor gets no
+  more latitude than this one.
 - Rejects a non-mapping handler return value as malformed rather than
   constructing a ``ToolResult`` around it — a handler's output shape is
   enforced here, not assumed.
@@ -73,6 +81,14 @@ from chanakya.capability.envelope import (
     violation_message,
 )
 from chanakya.contracts.target import Target
+from chanakya.contracts.tool_failure import (
+    HANDLER_EXCEPTION,
+    HANDLER_NOT_REGISTERED,
+    HANDLER_OUTPUT_MALFORMED,
+    TARGET_NOT_REGISTERED,
+    TARGET_TYPE_UNSUPPORTED,
+    failure_message,
+)
 from chanakya.contracts.tool_result import ToolResult, ToolResultStatus
 from chanakya.runtime.dispatch import DispatchInstruction
 from chanakya.runtime.timeout_supervisor import ToolExecutionTimedOut
@@ -99,9 +115,11 @@ class CapabilityHandler(Protocol):
         """Returns the ``ToolResult.output`` payload directly (not a
         ``ToolResult``) — this class owns every other field of the result.
         Raise on failure; ``CapabilityDispatchExecutor`` normalizes the
-        exception into a structured ``ToolResult(status=error)``. Raise
+        exception into ``ToolResult(status=error)`` with the fixed message
+        ``tool_execution_failed: HANDLER_EXCEPTION``. Raise
         ``chanakya.runtime.timeout_supervisor.ToolExecutionTimedOut``
-        specifically to signal a handler's own internal timeout."""
+        specifically to signal a handler's own internal timeout. Phase 16:
+        exception text is a signal only and never crosses a boundary."""
         ...
 
 
@@ -150,43 +168,34 @@ class CapabilityDispatchExecutor:
         ):
             return self._error_result(instruction, started_at, violation_message(ENVELOPE_MISMATCH))
 
+        # Phase 16 (T-61): every message below is a fixed Runtime code.
+        # Nothing from the handler, the target or the request is echoed.
         handler = self._handlers.get(instruction.capability)
         if handler is None:
-            return self._error_result(
-                instruction, started_at, f"no Tool Layer handler registered for capability {instruction.capability!r}"
-            )
+            return self._error_result(instruction, started_at, failure_message(HANDLER_NOT_REGISTERED))
 
         target = self._targets.get(instruction.target_ref)
         if target is None:
-            return self._error_result(
-                instruction, started_at, f"target {instruction.target_ref!r} is not registered"
-            )
+            return self._error_result(instruction, started_at, failure_message(TARGET_NOT_REGISTERED))
 
         if target.target_type not in handler.supported_target_types:
-            return self._error_result(
-                instruction,
-                started_at,
-                f"handler for capability {instruction.capability!r} does not support "
-                f"target_type {target.target_type!r} (supports: {tuple(handler.supported_target_types)!r})",
-            )
+            return self._error_result(instruction, started_at, failure_message(TARGET_TYPE_UNSUPPORTED))
 
         try:
             output = handler.run(target, instruction.parameters)
         except ToolExecutionTimedOut:
-            # Propagate unchanged — this is TimeoutSupervisor's signal to
-            # convert to a synthetic ToolResult(status=timeout); it must
-            # never be normalized into a generic ERROR result here.
+            # Propagate as a signal only: TimeoutSupervisor converts it to a
+            # synthetic ToolResult(status=timeout) with a fixed code and never
+            # reads its message. It must never become a generic ERROR here.
             raise
-        except Exception as exc:  # every other handler exception — never let it escape.
-            return self._error_result(instruction, started_at, f"{exc.__class__.__name__}: {exc}")
+        except Exception:  # every other handler exception; never let it escape.
+            # Phase 16 (NX16-INV-1): the exception's message, arguments and
+            # class name are handler-controlled and are dropped. The failure
+            # itself is kept: this is still an ERROR result.
+            return self._error_result(instruction, started_at, failure_message(HANDLER_EXCEPTION))
 
         if not isinstance(output, Mapping):
-            return self._error_result(
-                instruction,
-                started_at,
-                f"handler for capability {instruction.capability!r} returned a non-mapping "
-                f"output ({type(output).__name__}) — rejected as malformed",
-            )
+            return self._error_result(instruction, started_at, failure_message(HANDLER_OUTPUT_MALFORMED))
 
         # Phase 11: size and schema, before anything can become Evidence.
         violation = check_output(envelope, output)

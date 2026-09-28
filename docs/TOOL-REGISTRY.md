@@ -373,6 +373,16 @@ parameters. `envelope_from_registry_entry` copies the value into
 model only when the authorizing envelope says `allowed`. See
 `docs/AGENT-RUNTIME.md` "Tool-output screening and model egress (Phase 15)".
 
+### Failure text (Phase 16)
+
+A handler signals failure by raising, and a timeout by raising
+`ToolExecutionTimedOut`. It never writes the failure text.
+`CapabilityDispatchExecutor` returns a fixed `tool_execution_failed: <CODE>`
+message; the exception's message, arguments and class name are dropped.
+The Runtime rejects any other non-success text from any executor. No
+Registry field changes. See `docs/AGENT-RUNTIME.md` "Failure-path output
+control (Phase 16)".
+
 ### Capability execution envelope (Phase 11)
 
 `output_schema`, `resource_limits.max_output_bytes` and

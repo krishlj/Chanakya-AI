@@ -104,3 +104,10 @@ class ContextSourceError(RuntimeInvariantError):
 class ProviderContractError(RuntimeInvariantError):
     """Phase 14: a declared provider returned an identity, prepared request
     or response of the wrong shape. Treated as a provider failure."""
+
+
+class ToolExecutorRaisedError(RuntimeInvariantError):
+    """Phase 16 (T-61): an injected ``ToolExecutor`` raised instead of
+    returning a ``ToolResult``. Raised in place of the original exception,
+    whose text is withheld, so the existing fail-closed backstop records a
+    fixed message and never the executor's exception text."""

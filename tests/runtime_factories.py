@@ -78,8 +78,18 @@ def make_tool_result(
         started_at=now(),
         completed_at=now(),
         output=output if output is not None else ({} if status == ToolResultStatus.SUCCESS else None),
-        error_message=error_message,
+        error_message=error_message if error_message is not None else _default_failure_message(status),
     )
+
+
+def _default_failure_message(status: ToolResultStatus) -> Optional[str]:
+    """Phase 16: an executor double speaks the Runtime-owned failure
+    vocabulary, as every executor must (NX16-INV-2)."""
+    from chanakya.contracts.tool_failure import HANDLER_EXCEPTION, HANDLER_TIMEOUT, failure_message
+
+    if status == ToolResultStatus.SUCCESS:
+        return None
+    return failure_message(HANDLER_TIMEOUT if status == ToolResultStatus.TIMEOUT else HANDLER_EXCEPTION)
 
 
 def make_approval_request(

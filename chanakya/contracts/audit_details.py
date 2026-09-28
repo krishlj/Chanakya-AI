@@ -34,9 +34,11 @@ JSON-compatible, at most ``MAX_PARAMETERS_BYTES`` canonical bytes, and
 free of credential-shaped keys or string values. ``verify_parameters``
 re-derives both from the stored text.
 
-Screening reuses the existing patterns: the ``TargetLocator`` URL-userinfo
-and ``key=`` patterns and the Finding free-text pattern (keyword followed
-by ``=`` or ``:``, or a PEM private-key header). It is best-effort
+Screening uses the one canonical credential predicate
+(``chanakya.contracts.tool_output_screening.is_credential_shaped_value`` /
+``is_credential_shaped_key``, Phase 16): URL userinfo, ``key=`` and
+``keyword:`` credential assignments, PEM private-key headers and
+upper-case env-style assignments (``…_TOKEN=``). It is best-effort
 (docs/THREAT-MODEL.md T-20), not a secret scanner.
 
 Every builder fails closed with ``AuditFactError``, whose message is only a
@@ -52,8 +54,7 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 from chanakya.capability.envelope import CapabilityEnvelope, is_json_compatible
 from chanakya.evidence.hashing import canonical_bytes, compute_content_hash
 
-from .finding import _TEXT_CREDENTIAL_PATTERN
-from .target import _CREDENTIAL_PARAM_PATTERN, _URL_USERINFO_PATTERN
+from .tool_output_screening import is_credential_shaped_key, is_credential_shaped_value
 
 MAX_OBJECTIVE_CHARS = 2000
 MAX_FACT_CHARS = 256
@@ -82,11 +83,8 @@ class AuditFactError(ValueError):
 
 
 def _credential_shaped(text: str) -> bool:
-    return bool(
-        _URL_USERINFO_PATTERN.search(text)
-        or _CREDENTIAL_PARAM_PATTERN.search(text)
-        or _TEXT_CREDENTIAL_PATTERN.search(text)
-    )
+    # Phase 16 (NX16-INV-4): the one canonical predicate, never a local copy.
+    return is_credential_shaped_value(text)
 
 
 def objective_fact(value: Any) -> str:
@@ -127,7 +125,7 @@ def _screen_parameter_values(value: Any) -> None:
         elif isinstance(item, Mapping):
             for key, child in item.items():
                 # A key such as "password" is a credential carrier on its own.
-                if _credential_shaped(f"{key}=x") or _LINE_FORBIDDEN.search(key):
+                if is_credential_shaped_key(key) or _LINE_FORBIDDEN.search(key):
                     raise AuditFactError(FACT_CREDENTIAL_SHAPED, "parameters")
                 stack.append(child)
         elif isinstance(item, list):

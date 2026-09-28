@@ -6,14 +6,11 @@ Gateway, the Approval mechanism, and a future Tool Layer never write to
 the Audit Log directly; they only hand the Runtime what it needs. This
 module is that emission point.
 
-This is deliberately **not** the persistent, tamper-evident Audit Log
-described in ``ARCHITECTURE.md`` §14/§10 (append-only storage with
-content hashing) — that store does not exist yet (per
-docs/PHASE-2-IMPLEMENTATION.md's "no Audit Log yet" limitation, carried
-forward; Step 3.5's own scope explicitly excludes building one). Events
-are handed to an injected ``AuditSink`` — ``NullAuditSink`` by default
-(no side effects, safe for any caller that doesn't care about audit
-output), or ``InMemoryAuditSink`` for tests/inspection.
+This module builds events; it does not store them. Events are handed to
+an injected ``AuditSink``: the durable, hash-chained
+``chanakya.audit.FilesystemAuditLog`` in production (Phase 6),
+``NullAuditSink`` by default (no side effects), or ``InMemoryAuditSink``
+for tests/inspection.
 
 Where this step's required event categories ("retry", "timeout") have no
 dedicated ``event_type`` in ``docs/CONTRACTS.md`` §13's closed enum, they
@@ -39,6 +36,7 @@ from chanakya.contracts.agent_turn import ContextManifest, TurnOutcomeRecord
 from chanakya.contracts.audit_event import AUDIT_EVENT_CONTRACT_VERSION, AuditEvent, AuditEventType, AuditSeverity
 from chanakya.contracts.policy_decision import PolicyDecision
 from chanakya.contracts.risk_assessment import RiskAssessment
+from chanakya.contracts.tool_failure import FAILURE_TEXT_NOT_RUNTIME_OWNED, is_runtime_failure_message
 from chanakya.contracts.tool_request import ToolRequest
 from chanakya.contracts.tool_result import ToolResult
 
@@ -362,7 +360,13 @@ class AuditEmitter:
         actor: str = "system",
     ) -> AuditEvent:
         details: dict = {"status": tool_result.status.value, "retry_scheduled": retry_scheduled}
-        if tool_result.error_message:
+        if tool_result.error_message is not None:
+            # Phase 16 (NX16-INV-1, AuditEvent 1.3.0): only a Runtime-owned
+            # failure message is ever recorded. Anything else is an audit
+            # write failure (fixed code, value never echoed), so the Runtime
+            # backstop halts before the text is persisted.
+            if not is_runtime_failure_message(tool_result.error_message):
+                raise AuditSinkError(f"audit fact rejected: {FAILURE_TEXT_NOT_RUNTIME_OWNED} (error_message)")
             details["error_message"] = tool_result.error_message
         if reason is not None:
             details["reason"] = reason

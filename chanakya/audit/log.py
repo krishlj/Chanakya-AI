@@ -53,10 +53,12 @@ Fails closed (AL-INV-5/8): an invalid identifier, a record over
 chain head, a sequence collision, or any I/O error raises. Nothing is
 truncated, repaired, or partially written.
 
-Credential screening is best-effort only: ``details`` keys and string
-values are checked with the same URL-userinfo and ``password=``/``token=``
-patterns ``TargetLocator`` uses (docs/THREAT-MODEL.md T-20). It is not a
-secret scanner; an unstructured secret is not detected.
+Credential screening is best-effort only. Since Phase 16 it is the
+canonical tool-output screen (``screen_tool_output``): URL userinfo,
+``key=``/``keyword:`` credential assignments, PEM private-key headers and
+upper-case env-style assignments, in every ``details`` key and string value
+(docs/THREAT-MODEL.md T-20, T-61). It is not a secret scanner; an
+unstructured secret is not detected.
 
 Known limitations (documented, not solved here):
 
@@ -87,7 +89,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
 from chanakya.contracts.audit_event import AuditEvent, AuditEventType, AuditSeverity
-from chanakya.contracts.target import _CREDENTIAL_PARAM_PATTERN, _URL_USERINFO_PATTERN
+from chanakya.contracts.tool_output_screening import OUTPUT_UNSCREENABLE, screen_tool_output
 from chanakya.evidence.hashing import canonical_bytes, compute_content_hash
 from chanakya.evidence.store import InvalidIdentifierError as _EvidenceInvalidIdentifierError
 from chanakya.evidence.store import _validate_identifier as _validate_evidence_identifier
@@ -232,19 +234,18 @@ def _hash_input(sequence: int, previous_record_hash: Optional[str], recorded_at:
     }
 
 
-def _screen_credentials(value: Any, path: str) -> None:
-    """Best-effort: rejects a ``details`` key or string value carrying URL
-    userinfo or a ``password=``/``token=``-style pair."""
-    if isinstance(value, str):
-        if _URL_USERINFO_PATTERN.search(value) or _CREDENTIAL_PARAM_PATTERN.search(value):
-            raise CredentialShapedAuditDataError(f"credential-shaped value in AuditEvent.{path}; record not persisted")
-    elif isinstance(value, Mapping):
-        for key, item in value.items():
-            _screen_credentials(str(key), f"{path} key")
-            _screen_credentials(item, f"{path}.{key}")
-    elif isinstance(value, (list, tuple)):
-        for index, item in enumerate(value):
-            _screen_credentials(item, f"{path}[{index}]")
+def _screen_credentials(details: Any) -> None:
+    """Phase 16 (NX16-INV-4): the audit log screens ``details`` with the
+    same function that screens tool output (``screen_tool_output``): every
+    string value and key, at any depth, bounded and iterative. It is never
+    weaker than the tool-output screen. A hit, or details that cannot be
+    screened completely, is rejected; nothing is persisted and the value is
+    never echoed."""
+    code = screen_tool_output({"details": details})
+    if code == OUTPUT_UNSCREENABLE:
+        raise AuditLogError("AuditEvent.details cannot be screened; record not persisted")
+    if code is not None:
+        raise CredentialShapedAuditDataError(f"credential-shaped content in AuditEvent.details ({code}); record not persisted")
 
 
 # -- the log -------------------------------------------------------------------
@@ -352,7 +353,7 @@ class FilesystemAuditLog:
             raise TypeError("FilesystemAuditLog.emit requires an AuditEvent")
         stream = _stream_name(event.investigation_id)
         event_dict = _event_to_dict(event)
-        _screen_credentials(event_dict["details"], "details")
+        _screen_credentials(event_dict["details"])
         # Must be plain JSON; anything else is rejected, never stringified.
         try:
             canonical_bytes(event_dict)

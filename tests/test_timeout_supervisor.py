@@ -89,7 +89,9 @@ def test_executor_signaled_timeout_becomes_synthetic_timeout_result():
 
     result = supervisor.execute_with_timeout(make_instruction(), TimingOutExecutor(), timeout_seconds=5)
     assert result.status.value == "timeout"
-    assert "own configured timeout" in result.error_message
+    # Phase 16 (NX16-INV-3): the signal's own message is never used.
+    assert result.error_message == "tool_execution_failed: HANDLER_TIMEOUT"
+    assert "own configured timeout" not in result.error_message
 
 
 def test_an_overrunning_result_is_discarded_never_trusted():
@@ -113,7 +115,7 @@ def test_an_overrunning_result_is_discarded_never_trusted():
 
     assert executor.call_count == 1  # the call did happen...
     assert result.status.value == "timeout"  # ...but its result was discarded
-    assert "999" in result.error_message or "exceeding" in result.error_message
+    assert result.error_message == "tool_execution_failed: STEP_TIMEOUT_EXCEEDED"
 
 
 def test_bind_routes_calls_through_the_supervisor():

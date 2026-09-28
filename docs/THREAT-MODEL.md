@@ -892,10 +892,12 @@ Likelihood/Impact/Risk use: **Low / Medium / High / Critical**.
     code.
   - Evidence records the screening policy version and
     `redactions_applied=false`, meaning "screened, nothing redacted".
-  - Credential screening now covers the objective, parameters, findings,
-    audit details, explanations and tool output. General sensitive-data
-    classification (PII, internal hostnames and so on) is **not**
-    implemented.
+  - Credential screening covers the objective, parameters, findings,
+    audit details, explanations and *successful* tool output. *(Corrected
+    in Phase 16: until then, failed and timed-out tool text was not
+    screened, and the audit log used a weaker pattern set; see T-61.)*
+    General sensitive-data classification (PII, internal hostnames and so
+    on) is **not** implemented.
   - *Status:* partially mitigated. The residual is novel or unstructured
     secret formats.
 
@@ -1438,6 +1440,51 @@ boundary. **Turn records are forensic records and carry no authority.**
 - **Authority (NX-INV-6).** Screening results, the screening version,
   `model_egress` and the manifest egress metadata are never read by the
   Policy Gateway, approval, dispatch or risk (AST and behavioral tests).
+- **Scope (corrected in Phase 16).** T-60's controls cover *successful*
+  output only. Failure-path text was a separate gap (T-61).
+
+### Candidate threats from Phase 16 (failure-path output control)
+
+- **T-61: unscreened failure-path tool text crossing the persistence and
+  model boundaries** (TB-6 inbound, TB-8, TB-2; realizes a T-20/T-22/T-03
+  gap left by T-60).
+  - *Before Phase 16:* the executor built `error_message` from the
+    handler's exception (`f"{ExcClass}: {exc}"`). The timeout supervisor
+    used the `ToolExecutionTimedOut` message. Neither was screened: the
+    Phase 15 screen ran only on success, and the audit log's screen
+    missed PEM headers and `…_TOKEN=` assignments. Reproduced with
+    `ValueError("GITHUB_TOKEN=…")` and a PEM header in a handler exception.
+    The text reached the durable audit log (`dispatch_failed`), the
+    provider (a `tool_result_error` context source) and Review, and the
+    investigation completed. The same channel carried prompt-injection
+    text (T-03).
+  - *Controls (MITIGATED):*
+    - handlers signal failure; the Tool Layer and Timeout Supervisor emit
+      only fixed `tool_execution_failed: <CODE>` messages, and exception
+      text and class names are dropped;
+    - a Runtime backstop accepts a non-success result only if its message
+      is in the closed vocabulary, agrees with the status and carries no
+      other content. Anything else fails the investigation closed
+      (`tool_failure_output_rejected`) before audit, context or retry;
+    - late results after cancellation are replaced by a Runtime-owned
+      `CANCELLED` result;
+    - `dispatch_failed` refuses non-vocabulary text, and context sources
+      are re-checked every turn;
+    - the audit log screens with the tool-output screen (one predicate);
+    - Review flags invalid failure text in AuditEvent 1.3.0 streams and
+      never echoes it (NX16-INV-1..6).
+  - *Residual:* handler diagnostics are no longer recorded. The shared
+    predicate is pattern-based (T-20). A consistent full-chain rewrite to
+    a historical version is not detected (T-18).
+- **T-20 (Phase 16 status): PARTIALLY MITIGATED**, now uniformly: the
+  success path, the failure path, audit details and fact builders share
+  one credential predicate. Residual: pattern-based detection.
+- **T-03 (Phase 16 addition).** Tool failure text is no longer an
+  injection carrier: the model sees only fixed codes for failures.
+  Successful output remains untrusted data (residual unchanged).
+- **T-22 (Phase 16 addition).** No handler failure text leaves the host.
+  Status unchanged: PARTIALLY MITIGATED (successful `allowed` output still
+  does by design).
 
 ---
 
@@ -1495,8 +1542,8 @@ assumed away:
 - **Third-party LLM provider trust** (data leaves the host for analysis)
   is an accepted, documented tradeoff of the chosen architecture, not a
   residual bug.
-- **Novel secret formats** may evade redaction scanning until the scanner
-  is updated for them.
+- **Novel secret formats** may evade credential screening (detection and
+  rejection; nothing is redacted) until the patterns are updated for them.
 - **Remote approval/remote targets** (T-17, T-26) are explicitly
   unresolved until those future phases are designed with their own
   authentication/transport requirements.

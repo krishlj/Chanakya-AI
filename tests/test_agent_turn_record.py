@@ -292,7 +292,7 @@ def test_an_assembler_that_adds_data_is_rejected(investigation_manager, resource
 
 def test_failed_results_are_context_sources_with_their_error_text(investigation_manager, resource_governor, gateway, started_investigation):
     executor = FakeToolExecutor(
-        lambda i: make_tool_result(i.tool_request_id, i.capability, status=ToolResultStatus.ERROR, error_message="boom")
+        lambda i: make_tool_result(i.tool_request_id, i.capability, status=ToolResultStatus.ERROR, error_message="tool_execution_failed: HANDLER_EXCEPTION")
     )
     sink = InMemoryAuditSink()
     controller = _controller(investigation_manager, resource_governor, gateway, executor, audit=AuditEmitter(sink))
@@ -301,11 +301,11 @@ def test_failed_results_are_context_sources_with_their_error_text(investigation_
     capturing = _Capturing([make_agent_turn_conclude(started_investigation.investigation_id)])
     controller.run_turn(started_investigation.investigation_id, capturing)
     (entry,) = capturing.contexts[0].data
-    assert entry.content == "boom"
+    assert entry.content == "tool_execution_failed: HANDLER_EXCEPTION"
     manifest = [e for e in sink.events if e.event_type == E.AGENT_TURN_REQUESTED][-1].details
     (recorded,) = manifest["context_entries"]
     assert recorded["source_kind"] == "tool_result_error" and recorded["evidence_id"] is None
-    assert recorded["content_hash"] == hash_json_normalized("boom")
+    assert recorded["content_hash"] == hash_json_normalized("tool_execution_failed: HANDLER_EXCEPTION")
 
 
 # ===========================================================================

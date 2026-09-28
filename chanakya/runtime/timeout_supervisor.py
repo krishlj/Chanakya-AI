@@ -38,12 +38,19 @@ continue after timeout/cancellation"). Instead:
 Neither path retries anything itself — a timeout is handed back as an
 ordinary step outcome; only the Retry Controller (docs/AGENT-RUNTIME.md
 §12) decides whether a further attempt is permitted.
+
+Phase 16 (T-61, NX16-INV-3): the synthetic result's ``error_message`` is a
+fixed Runtime code: ``tool_execution_failed: HANDLER_TIMEOUT`` for a
+handler's own signal, ``tool_execution_failed: STEP_TIMEOUT_EXCEEDED`` for
+a measured overrun. The ``ToolExecutionTimedOut`` message is never read,
+and the measured duration is not echoed.
 """
 from __future__ import annotations
 
 import uuid
 from typing import Optional
 
+from chanakya.contracts.tool_failure import HANDLER_TIMEOUT, STEP_TIMEOUT_EXCEEDED, failure_message
 from chanakya.contracts.tool_result import ToolResult, ToolResultStatus
 
 from .clock import elapsed_seconds, utcnow_iso
@@ -55,7 +62,8 @@ _CONTRACT_VERSION = "1.0.0"
 
 class ToolExecutionTimedOut(Exception):
     """Raised by a ``ToolExecutor`` to signal it hit its own configured
-    timeout. Never raised by the Runtime against a well-behaved
+    timeout. Phase 16: a signal only; its message is never read or
+    recorded. Never raised by the Runtime against a well-behaved
     executor — only ever consumed here, converted into a synthetic
     ``ToolResult(status=timeout)``, and never re-raised or retried by
     this class itself."""
@@ -78,17 +86,15 @@ class TimeoutSupervisor:
         start_iso = self._clock()
         try:
             result = executor.execute(instruction)
-        except ToolExecutionTimedOut as exc:
-            return self._synthetic_timeout_result(
-                instruction, detail=str(exc) or "tool executor signaled its own timeout"
-            )
+        except ToolExecutionTimedOut:
+            # Phase 16 (NX16-INV-3): the signal is honored; its message is
+            # never read. The timeout text is Runtime-owned.
+            return self._synthetic_timeout_result(instruction, code=HANDLER_TIMEOUT)
 
         end_iso = self._clock()
         elapsed = elapsed_seconds(start_iso, end_iso)
         if elapsed is not None and elapsed > timeout_seconds:
-            return self._synthetic_timeout_result(
-                instruction, detail=f"execution took {elapsed:.3f}s, exceeding the {timeout_seconds}s budget"
-            )
+            return self._synthetic_timeout_result(instruction, code=STEP_TIMEOUT_EXCEEDED)
         return result
 
     def bind(self, executor: ToolExecutor, *, timeout_seconds: int) -> ToolExecutor:
@@ -100,7 +106,7 @@ class TimeoutSupervisor:
         return _TimeoutBoundExecutor(self, executor, timeout_seconds)
 
     @staticmethod
-    def _synthetic_timeout_result(instruction: DispatchInstruction, *, detail: str) -> ToolResult:
+    def _synthetic_timeout_result(instruction: DispatchInstruction, *, code: str) -> ToolResult:
         now = utcnow_iso()
         return ToolResult(
             tool_result_id=str(uuid.uuid4()),
@@ -110,7 +116,7 @@ class TimeoutSupervisor:
             status=ToolResultStatus.TIMEOUT,
             started_at=now,
             completed_at=now,
-            error_message=detail,
+            error_message=failure_message(code),
         )
 
 

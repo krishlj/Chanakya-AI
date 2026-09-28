@@ -451,6 +451,7 @@ def _render_review(output: TextIO, review: Any) -> None:
                 f"      dispatch: timeout {dispatch.resolved_timeout_seconds}s, max output {dispatch.max_output_bytes}"
                 f" bytes; result {_safe(dispatch.status)}"
                 + (f"; error {_safe(dispatch.error_message)}" if dispatch.error_message else "")
+                + ("; error text withheld (not Runtime-owned or unsafe)" if dispatch.error_message_withheld else "")
                 + "\n"
             )
         if request.evidence_id is not None:

@@ -48,9 +48,12 @@ class AuditEventType(str, Enum):
 #: 1.1.0. 1.2.0 (Phase 15) adds ``model_egress`` to the policy_evaluated
 #: envelope summary and ``capability``/``model_egress`` to each manifest
 #: context entry, and means every Evidence record carries screening
-#: provenance.
-AUDIT_EVENT_CONTRACT_VERSION = "1.2.0"
-SUPPORTED_AUDIT_EVENT_VERSIONS = frozenset({"1.0.0", "1.1.0", AUDIT_EVENT_CONTRACT_VERSION})
+#: provenance. 1.3.0 (Phase 16) means every ``dispatch_failed``
+#: ``error_message`` and every ``tool_result_error`` context entry is a
+#: Runtime-owned failure message (``chanakya.contracts.tool_failure``);
+#: earlier streams may hold free-form failure text.
+AUDIT_EVENT_CONTRACT_VERSION = "1.3.0"
+SUPPORTED_AUDIT_EVENT_VERSIONS = frozenset({"1.0.0", "1.1.0", "1.2.0", AUDIT_EVENT_CONTRACT_VERSION})
 
 
 def version_tuple(version: str) -> tuple:
