@@ -127,7 +127,10 @@ class AuditEmitter:
             # sink's own exception in AuditSinkError is what lets the
             # caller distinguish "the audit sink itself is broken" from
             # any other unexpected Runtime error.
-            raise AuditSinkError(f"AuditSink.emit failed: {exc}") from exc
+            # Phase 17: a fixed message. The sink's own exception text (an OS
+            # error, a path, a rejected value) is never carried forward; it
+            # stays only as the chained cause for local debugging.
+            raise AuditSinkError("AuditSink.emit failed") from exc
         return event
 
     # -- investigation lifecycle (also usable by InvestigationManager) --

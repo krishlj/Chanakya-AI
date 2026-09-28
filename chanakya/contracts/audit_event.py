@@ -51,9 +51,13 @@ class AuditEventType(str, Enum):
 #: provenance. 1.3.0 (Phase 16) means every ``dispatch_failed``
 #: ``error_message`` and every ``tool_result_error`` context entry is a
 #: Runtime-owned failure message (``chanakya.contracts.tool_failure``);
-#: earlier streams may hold free-form failure text.
-AUDIT_EVENT_CONTRACT_VERSION = "1.3.0"
-SUPPORTED_AUDIT_EVENT_VERSIONS = frozenset({"1.0.0", "1.1.0", "1.2.0", AUDIT_EVENT_CONTRACT_VERSION})
+#: earlier streams may hold free-form failure text. 1.4.0 (Phase 17) means
+#: every ``error`` and ``investigation_halted`` event carries exactly a
+#: closed-shape Runtime record (``chanakya.contracts.runtime_failure``) and
+#: a provider-failure turn outcome records only ``PROVIDER_FAILURE`` as its
+#: ``error_type``; earlier streams may hold exception text there.
+AUDIT_EVENT_CONTRACT_VERSION = "1.4.0"
+SUPPORTED_AUDIT_EVENT_VERSIONS = frozenset({"1.0.0", "1.1.0", "1.2.0", "1.3.0", AUDIT_EVENT_CONTRACT_VERSION})
 
 
 def version_tuple(version: str) -> tuple:

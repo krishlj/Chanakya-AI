@@ -159,7 +159,7 @@ def test_investigation_status_axis(investigation_manager, resource_governor, gat
 
         controller.run_turn(started_investigation.investigation_id, ScriptedAgentProvider([make_agent_turn_conclude(started_investigation.investigation_id)]))
     elif setup == "failed":
-        investigation_manager.fail(started_investigation.investigation_id, reason="test")
+        investigation_manager.fail(started_investigation.investigation_id, reason="dispatch_precondition_violation")
     elif setup == "halted":
         investigation_manager.cancel(started_investigation.investigation_id, cancelled_by="alice")
 

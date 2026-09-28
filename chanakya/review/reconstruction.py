@@ -57,6 +57,14 @@ What it checks:
    is never echoed. In older streams free-form failure text is expected and
    is shown, except credential-shaped or control-character text, which is
    withheld (without an anomaly: it predates the control).
+9. **Terminal and error records (Phase 17, P17-INV-5).** For streams
+   written under AuditEvent 1.4.0, every ``error`` and
+   ``investigation_halted`` event must carry exactly a closed-shape Runtime
+   record (``chanakya.contracts.runtime_failure``), and a provider-failure
+   turn outcome may name only ``PROVIDER_FAILURE``. Anything else is flagged
+   (``terminal_details_invalid``, ``turn_error_type_invalid``); the reason
+   and category are then withheld, never echoed. In older streams only a
+   plain reason token is shown.
 
 Anomalies are fixed codes plus, at most, an identifier.
 """
@@ -77,6 +85,7 @@ from chanakya.contracts.agent_turn import (
     validate_turn_details,
 )
 from chanakya.contracts.audit_details import validate_details
+from chanakya.contracts import runtime_failure as rf
 from chanakya.contracts.audit_event import version_tuple
 from chanakya.contracts.tool_failure import MAX_FAILURE_MESSAGE_CHARS, failure_message_problem
 from chanakya.contracts.tool_output_screening import (
@@ -105,6 +114,7 @@ from .models import (
 _REVIEW_ASSESSED_AT = "review"
 #: Longest historical (pre-1.3.0) failure text Review will display.
 _MAX_HISTORICAL_FAILURE_TEXT = 1000
+_REASON_TOKEN = re.compile(r"^[a-z0-9_]{1,64}$")
 _CONTROL_CHARACTERS = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 _RISK_COMPARED = (
     "risk_assessment_id", "investigation_id", "finding_refs", "evidence_refs", "severity", "confidence",
@@ -130,6 +140,8 @@ class _Builder:
         self.turn_era = False
         self.egress_era = False
         self.failure_era = False
+        self.terminal_era = False
+        self.terminal_category: Optional[str] = None
         # Phase 16: the recorded failure text per tool request, used only to
         # compare hashes; never exposed in the review.
         self.failure_texts: Dict[str, Any] = {}
@@ -164,6 +176,7 @@ class _Builder:
         self.turn_era = strictest >= (1, 1, 0)
         self.egress_era = strictest >= (1, 2, 0)
         self.failure_era = strictest >= (1, 3, 0)
+        self.terminal_era = strictest >= (1, 4, 0)
 
     def replay(self, records) -> None:
         for index, record in enumerate(records):
@@ -529,6 +542,9 @@ class _Builder:
             self.flag("turn_id_mismatch", turn_id)
         if details["provider_request_hash"] != turn["provider_request_hash"]:
             self.flag("turn_request_hash_mismatch", turn_id)
+        if self.terminal_era and details.get("error_type") not in (None, rf.PROVIDER_FAILURE):
+            # Phase 17: an exception class name recorded as error_type.
+            self.flag("turn_error_type_invalid", turn_id)
         turn.update(
             outcome=details["outcome"], accepted=details["accepted"], stop_reason=details["stop_reason"],
             proposed_capability=details["proposed_capability"], explanation_status=details["explanation_status"],
@@ -548,22 +564,36 @@ class _Builder:
     def _on_agent_turn_rejected(self, index, ids, details) -> None:
         self._on_turn_outcome("agent_turn_rejected", ids, details)
 
-    def _on_investigation_halted(self, index, ids, details) -> None:
+    def _terminal_facts(self, event_type: str, details: Any, subject: Optional[str]):
+        """Phase 17 (P17-INV-5): ``(reason, category)`` to report, or
+        ``(None, None)`` when withheld. Never echoes rejected text."""
+        if self.terminal_era:
+            if rf.validate_terminal_details(event_type, details) is not None:
+                self.flag("terminal_details_invalid", subject)
+                return None, None
+            return details["reason"], details["category"]
         reason = details.get("reason") if isinstance(details, dict) else None
-        self._set_terminal(ReviewStatus.HALTED, reason if isinstance(reason, str) else None)
+        # Older streams: show only a plain Runtime reason token.
+        if isinstance(reason, str) and _REASON_TOKEN.match(reason):
+            return reason, None
+        return None, None
+
+    def _on_investigation_halted(self, index, ids, details) -> None:
+        reason, category = self._terminal_facts("investigation_halted", details, ids.get("investigation_id"))
+        self._set_terminal(ReviewStatus.HALTED, reason, category)
 
     def _on_error(self, index, ids, details) -> None:
         # Only InvestigationManager.fail marks its `error` as terminal; the
         # fail-closed backstop's `error` events are not a terminal state.
+        reason, category = self._terminal_facts("error", details, ids.get("investigation_id"))
         if isinstance(details, dict) and details.get("investigation_status") == "failed":
-            reason = details.get("reason")
-            self._set_terminal(ReviewStatus.FAILED, reason if isinstance(reason, str) else None)
+            self._set_terminal(ReviewStatus.FAILED, reason, category)
 
-    def _set_terminal(self, status: ReviewStatus, reason: Optional[str]) -> None:
+    def _set_terminal(self, status: ReviewStatus, reason: Optional[str], category: Optional[str] = None) -> None:
         if self.terminal is not None:
             self.flag("duplicate_terminal_event")
             return
-        self.terminal, self.terminal_reason = status, reason
+        self.terminal, self.terminal_reason, self.terminal_category = status, reason, category
 
 
 def reconstruct_investigation(
@@ -618,6 +648,7 @@ def reconstruct_investigation(
         investigation_id=investigation_id,
         status=status,
         terminal_reason=builder.terminal_reason,
+        terminal_category=builder.terminal_category,
         audit_verified=True,
         audit_record_count=len(records),
         origin=builder.origin,

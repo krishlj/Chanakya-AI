@@ -869,7 +869,7 @@ def test_target_context_pushing_over_limit_halts_before_provider(long_name_regis
     assert context.status == InvestigationStatus.HALTED
     assert context.error_state["reason"] == "max_context_bytes_exceeded"  # existing resource-governance failure
     assert agent.assembled_contexts == []  # provider never called
-    assert "max_context_bytes" in str(result.detail)
+    assert result.detail == "RESOURCE_LIMIT_EXCEEDED"
 
     # Control: identical limit, no target context source -> provider is called.
     control_result, _, control_agent = _governed_turn(long_name_registry, gateway, limit, source=None)

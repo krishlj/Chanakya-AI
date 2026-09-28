@@ -230,9 +230,10 @@ def test_approval_request_records_what_was_shown(tmp_path):
 
 def test_failed_investigations_are_marked_terminal(tmp_path):
     run = Run(tmp_path).start()
-    run.runtime.manager.fail(run.inv, reason="test_failure")
+    run.runtime.manager.fail(run.inv, reason="dispatch_precondition_violation")
     (error,) = [e for e in run.events() if e.event_type == E.ERROR]
-    assert error.details == {"reason": "test_failure", "investigation_status": "failed"}
+    assert error.details == {"reason": "dispatch_precondition_violation", "category": "DISPATCH_PRECONDITION_VIOLATION",
+                             "investigation_status": "failed"}
 
 
 # ===========================================================================

@@ -52,10 +52,12 @@ def test_full_lifecycle_through_awaiting_approval(investigation_manager, investi
 def test_fail_sets_error_state(investigation_manager, investigation_request):
     context = investigation_manager.create_investigation(investigation_request)
     investigation_manager.start(context.investigation_id)
-    investigation_manager.fail(context.investigation_id, reason="dispatch_precondition_violation", details={"x": 1})
+    investigation_manager.fail(context.investigation_id, reason="tool_failure_output_rejected",
+                               facts={"code": "FAILURE_TEXT_NOT_RUNTIME_OWNED"})
     assert context.status == InvestigationStatus.FAILED
-    assert context.error_state["reason"] == "dispatch_precondition_violation"
-    assert context.error_state["x"] == 1
+    # Phase 17: the closed record, and nothing else.
+    assert context.error_state == {"reason": "tool_failure_output_rejected", "category": "TOOL_FAILURE_OUTPUT_REJECTED",
+                                   "code": "FAILURE_TEXT_NOT_RUNTIME_OWNED"}
 
 
 def test_halt_sets_error_state(investigation_manager, investigation_request):
@@ -98,9 +100,9 @@ def test_cancel_rejected_outside_running_or_awaiting_approval(investigation_mana
         if terminal_setup == "completed":
             investigation_manager.complete(context.investigation_id)
         elif terminal_setup == "failed":
-            investigation_manager.fail(context.investigation_id, reason="x")
+            investigation_manager.fail(context.investigation_id, reason="dispatch_precondition_violation")
         elif terminal_setup == "halted":
-            investigation_manager.halt(context.investigation_id, reason="x")
+            investigation_manager.halt(context.investigation_id, reason="max_steps_per_investigation_exceeded")
 
     with pytest.raises(RuntimeInvariantError):
         investigation_manager.cancel(context.investigation_id, cancelled_by="alice")

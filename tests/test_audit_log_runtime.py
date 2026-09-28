@@ -275,10 +275,11 @@ def test_audit_failure_when_starting_an_investigation_surfaces_to_the_caller(
 def test_documented_existing_behavior_when_the_sink_stays_broken(
     target_registry, resource_governor, gateway, investigation_request, log
 ):
-    """Existing Runtime behavior, recorded (not changed) by Phase 6: when
-    every later write also fails, the backstop's own halt emission fails
-    too. The investigation still ends HALTED and nothing runs, but the
-    backstop reports TurnOutcome.FAILED, and no halt record exists."""
+    """When every later write also fails, the backstop's own halt emission
+    fails too. The investigation ends HALTED and nothing runs. Phase 17
+    (P17-INV-3): the turn reports the state it is actually in (HALTED), and
+    the in-memory state says the terminal record is not durable; no halt
+    record is claimed."""
     w = Wiring(target_registry, resource_governor, gateway, log)
     context = w.start(investigation_request)
     w.audit._sink = FailOnEvent(log, E.REQUEST_PROPOSED, times=None)
@@ -286,7 +287,9 @@ def test_documented_existing_behavior_when_the_sink_stays_broken(
         w.audit._sink = _AlsoFail(w.audit._sink, later)
     result = w.propose(context)
     assert context.status == InvestigationStatus.HALTED
-    assert result.outcome == TurnOutcome.FAILED
+    assert result.outcome == TurnOutcome.HALTED and result.detail == "AUDIT_FAILURE"
+    assert context.error_state == {"reason": "audit_sink_failure", "category": "AUDIT_FAILURE",
+                                   "terminal_record": "not_durable"}
     assert w.executor.calls == []
     assert types(log, context.investigation_id) == [
         E.INVESTIGATION_STARTED, E.AGENT_TURN_REQUESTED, E.AGENT_TURN_RECEIVED  # Phase 14 turn records
@@ -306,16 +309,17 @@ class _AlsoFail:
 def test_documented_existing_behavior_when_completion_cannot_be_audited(
     target_registry, resource_governor, gateway, investigation_request, log
 ):
-    """Existing Runtime behavior, recorded: InvestigationManager.complete
-    transitions before emitting, so a failed investigation_completed write
-    leaves the investigation COMPLETED without a completion record. The
-    turn is not reported as CONCLUDED, and the investigation is terminal,
-    so nothing further can run."""
+    """Phase 17 (P17-INV-3) replaces the recorded pre-Phase 17 behavior
+    (COMPLETED in memory with no completion record). The completion is
+    written first; when that write fails, the investigation is never
+    COMPLETED: it is HALTED as audit_sink_failure with a not-durable
+    terminal record, the turn is not CONCLUDED, and nothing further runs."""
     w = Wiring(target_registry, resource_governor, gateway, FailOnEvent(log, E.INVESTIGATION_COMPLETED))
     context = w.start(investigation_request)
     result = w.conclude(context)
-    assert result.outcome == TurnOutcome.FAILED
-    assert context.status == InvestigationStatus.COMPLETED
+    assert result.outcome == TurnOutcome.HALTED and result.detail == "AUDIT_FAILURE"
+    assert context.status == InvestigationStatus.HALTED
+    assert context.error_state["terminal_record"] == "not_durable"
     persisted = types(log, context.investigation_id)
     assert E.INVESTIGATION_COMPLETED not in persisted and persisted[-1] == E.ERROR
 

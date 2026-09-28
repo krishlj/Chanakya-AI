@@ -2035,8 +2035,131 @@ Handler ── success ──────────────→ envelope �
 - A local attacker who rewrites the whole chain as a homogeneous 1.2.0
   stream makes it look historical (T-18). Credential-shaped historical text
   is still withheld from display.
-- Other Runtime-originated `detail` strings in `error`/`investigation_halted`
-  events come from Runtime components, not handlers, and are unchanged.
+- *(Corrected in Phase 17.)* `error`/`investigation_halted` details were
+  not only Runtime text: provider, adapter, store and approval exception
+  text reached them too (T-62). See the next section.
+
+#### Runtime-owned error and terminal records (Phase 17)
+
+**Why.** Phase 16 made `ToolResult` failure text Runtime-owned, but the
+Runtime's own records still embedded exception text from outside the
+Runtime. A provider SDK/remote error, an adapter, a store or the approval
+provider could raise; the backstop and 13 of the 19 fail/halt sites wrote
+`str(exc)` (and the class name) into:
+- `error`/`investigation_halted` details;
+- `InvestigationContext.error_state`;
+- `TurnResult.detail`, which the CLI prints.
+
+Worse, credential-shaped or 70 KB text made the terminal audit write fail
+(screen or size limit). The backstop swallowed that, so the investigation
+was FAILED in memory while the durable record had no terminal event
+(T-62).
+
+**Principle.** An exception from anywhere is a signal. The Runtime owns
+every record of it.
+
+```
+exception (provider / adapter / store / approval / executor / Runtime)
+  → Runtime-owned exception type (ProviderFailedError, ApprovalProviderFailedError, …)
+  → terminal_record(reason, category, facts)   closed, bounded, validated
+  → terminal audit event written FIRST
+  → only then the terminal state is published (error_state = the same record)
+     sink I/O failure → HALTED audit_sink_failure, terminal_record: not_durable
+```
+
+- **Vocabulary (`chanakya.contracts.runtime_failure`).**
+  - `reason`: one of `TERMINAL_REASONS`, the Runtime's existing reason
+    strings.
+  - `category`: one of `RUNTIME_FAILURE_CATEGORIES` allowed for that
+    reason. The categories are `PROVIDER_FAILURE`, `APPROVAL_FAILURE`,
+    `TOOL_EXECUTOR_FAILURE`, `RUNTIME_EXCEPTION`, `AUDIT_FAILURE`,
+    `TARGET_CONTEXT_UNAVAILABLE`, `ENVIRONMENT_UNAVAILABLE`,
+    `CONTEXT_SOURCE_REJECTED`, `EVIDENCE_RECORDING_FAILED`,
+    `FINDING_RECORDING_FAILED`, `FINDING_STORE_UNAVAILABLE`,
+    `RISK_ASSESSMENT_FAILED`, `RESOURCE_LIMIT_EXCEEDED`,
+    `DISPATCH_PRECONDITION_VIOLATION`, `TOOL_FAILURE_OUTPUT_REJECTED`,
+    `APPROVAL_EXPIRED` and `CANCELLED`. `unhandled_runtime_exception`
+    (the backstop) takes the category of the failing component; the other
+    reasons each have exactly one.
+  - Optional facts: `code` (a Phase 16 problem code), `finding_count`
+    (1–1000) and `cancelled_by` (≤ 256 characters, no control characters,
+    canonical credential screen).
+  - Anything else raises `TerminalRecordError` (fixed message) before
+    anything is written or transitioned. There is no free-form `details`
+    parameter any more.
+- **Closed shape first.** `error`/`investigation_halted` details are
+  exactly the record, plus `investigation_status: "failed"` on a terminal
+  `error`. Screening remains defense in depth; it is not the control. The
+  largest possible record is under 512 canonical bytes.
+- **Normalization.**
+  - *Provider:* any exception in `provider_identity`/`prepare_turn`/
+    `send_turn`/`next_turn` becomes `ProviderFailedError`. The turn
+    outcome records `error_type: PROVIDER_FAILURE`, never the class name.
+  - *Approval provider:* its exceptions become `ApprovalProviderFailedError`.
+    This still fails closed and is never an approval.
+  - *Target/environment:* `TargetManager.collect_environment` returns
+    fixed codes (`TARGET_NOT_REGISTERED`, `NO_ADAPTER_REGISTERED`,
+    `ADAPTER_COLLECTION_FAILED`), and `EnvironmentContextUnavailableError`
+    has fixed messages. Environment context stays unwired in the CLI.
+  - *Stores:* Evidence, Finding and Risk store exceptions become their
+    reason's category.
+  - *`AuditEmitter`:* wraps a sink exception as `AuditSinkError("AuditSink.emit failed")`,
+    with the original chained only as `__cause__`.
+- **Terminal durability (P17-INV-2/3).** `InvestigationManager.complete`,
+  `fail`, `halt` and `cancel` do the following in order:
+  1. build and validate the record;
+  2. check that the transition is allowed;
+  3. write the terminal event;
+  4. only then transition and release the concurrency slot.
+
+  External text cannot make the record unrecordable (Case A: a 70 KB
+  provider error still yields a durable FAILED event). If the audit sink
+  itself fails (Case B, I/O), the investigation is halted in memory with
+  `{"reason": "audit_sink_failure", "category": "AUDIT_FAILURE",
+  "terminal_record": "not_durable"}` and `TerminalRecordUndurableError` (an
+  `AuditSinkError`) is raised. The turn reports `HALTED`/`AUDIT_FAILURE`,
+  the CLI prints "terminal record NOT durable", and Review reports
+  `incomplete`. A completion whose event cannot be written is never
+  `COMPLETED`.
+- **TurnResult and CLI (P17-INV-4).** `TurnResult.detail` is `None` or a
+  member of `TURN_DETAIL_CODES` (categories plus fixed notes such as
+  `MALFORMED_TURN` or `AWAITING_APPROVAL_PENDING`). The constructor rejects
+  anything else. The CLI prints only these codes, and the final status
+  line prints `reason` and `category`. No new information reaches the
+  model.
+- **Review (AuditEvent 1.4.0, P17-INV-5).**
+  - In 1.4.0 streams, every `error`/`investigation_halted` event must be
+    exactly a closed-shape record (`terminal_details_invalid` otherwise), and
+    a provider-failure `error_type` may only be `PROVIDER_FAILURE`
+    (`turn_error_type_invalid`).
+  - Invalid values are withheld: `terminal_reason` and `terminal_category`
+    are then `None`.
+  - Mixed 1.3.0/1.4.0 streams are flagged and judged as 1.4.0.
+  - Older streams keep their semantics; only a plain reason token is shown.
+- **Authority (P17-INV-6).** The vocabulary is descriptive. Policy,
+  approval, the Registry, capability, risk, dispatch, intake and the Retry
+  Controller never reference it.
+
+| ID | Invariant | Tests (`tests/test_runtime_owned_error_records.py`) |
+|---|---|---|
+| P17-INV-1 | No external exception message or class name reaches audit, `error_state`, `TurnResult.detail` or the CLI. | `test_provider_exception_is_a_fixed_code_and_the_terminal_event_is_durable`, `test_real_sdk_error_body_never_crosses`, `test_provider_failure_before_sending_is_normalized`, `test_environment_adapter_exception_is_a_fixed_code`, `test_target_context_exception_is_a_fixed_code`, `test_evidence_store_exception_is_a_fixed_code`, `test_finding_and_risk_store_exceptions_are_fixed_codes`, `test_approval_provider_exception_is_a_fixed_code_and_never_approves`, `test_context_source_error_text_is_a_fixed_code`, `test_no_exception_text_reaches_terminal_or_error_records`, `test_the_static_rule_catches_reintroduced_exception_text` |
+| P17-INV-2 | Terminal details are closed-shape and bounded before persistence, so attacker text cannot prevent a terminal event. | `test_every_terminal_record_is_closed_small_and_deterministic`, `test_anything_outside_the_closed_shape_is_rejected`, `test_invalid_record_is_rejected_before_anything_is_written`, `test_equivalent_failures_produce_identical_records`, the 70 KB cases |
+| P17-INV-3 | Runtime terminal state and the durable terminal event agree, except on a genuine sink failure, which is explicit. | `test_terminal_event_is_durable_before_the_state_changes`, `test_genuine_sink_failure_is_explicit_and_never_claims_a_durable_terminal`, `test_cli_reports_a_not_durable_terminal_record`, `tests/test_audit_log_runtime.py` |
+| P17-INV-4 | The CLI prints only Runtime-owned codes. | `test_cli_prints_only_runtime_codes`, `test_turn_result_detail_accepts_only_runtime_codes` |
+| P17-INV-5 | Review of 1.4.0 streams flags and withholds invalid terminal/error details; mixed 1.3.0/1.4.0 is flagged. | `test_review_flags_forged_error_details_and_never_echoes_them`, `test_review_flags_forged_halt_details`, `test_review_flags_a_forged_turn_error_type`, `test_mixed_versions_cannot_downgrade_terminal_validation`, `test_historical_streams_keep_their_semantics`, `test_review_of_phase17_streams_is_consistent` |
+| P17-INV-6 | Runtime error codes carry no authority. | `test_runtime_error_codes_are_unreachable_from_authority`, `test_a_provider_failure_changes_no_policy_or_risk` |
+
+**Limitations.**
+- Operator diagnostics are coarser: exception messages are not recorded
+  anywhere, but the original stays chained as `__cause__` in the process.
+- Composition-time configuration errors printed by `main()` (before any
+  investigation exists) still show their trusted-code message. That is
+  the one reviewed exception to the static rule.
+- A genuine sink failure leaves no durable terminal event by definition:
+  Review shows `incomplete`. External anchoring is out of scope (T-18).
+- The Gateway's deny `reason` for a malformed request or schema violation
+  is Runtime/validator text over already-screened parameters. It is a
+  policy fact, not a terminal record, and is unchanged.
 
 **`RuntimeExecutionLimits`** — admin-controlled configuration (trusted,
 versioned, not Agent-writable), analogous to `PolicySet`.

@@ -251,7 +251,7 @@ def test_h10_h11_unknown_and_unregistered_adapter_fail_closed(target_registry):
         manager.select_adapter("kubernetes")
     result = manager.collect_environment("target-local-host-01")  # no adapter registered at all
     assert not result.succeeded
-    assert "no adapter registered" in result.error.lower()
+    assert result.error == "NO_ADAPTER_REGISTERED"
 
 
 # 12. Malformed locator
@@ -396,7 +396,8 @@ def test_h19_h20_environment_collection_failure_via_adapter_raising(monkeypatch,
     manager.register_adapter(LocalHostAdapter())
     result = manager.collect_environment("target-local-host-01")
     assert not result.succeeded
-    assert "oserror" in result.error.lower()
+    # Phase 17: the adapter's exception text and class are not carried.
+    assert result.error == "ADAPTER_COLLECTION_FAILED"
     assert manager.get("target-local-host-01").status == TargetStatus.AUTHORIZED  # never mutated
 
 

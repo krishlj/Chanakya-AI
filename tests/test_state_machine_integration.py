@@ -75,7 +75,7 @@ def test_no_integration_path_can_leave_a_terminal_state(
     elif terminal_setup == "halted":
         investigation_manager.cancel(started_investigation.investigation_id, cancelled_by="alice")
     else:
-        investigation_manager.fail(started_investigation.investigation_id, reason="test")
+        investigation_manager.fail(started_investigation.investigation_id, reason="dispatch_precondition_violation")
 
     assert started_investigation.status == InvestigationStatus(terminal_setup)
 

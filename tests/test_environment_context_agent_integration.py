@@ -567,7 +567,7 @@ def test_b_source_wrapper_fails_closed_and_is_id_scoped(target_manager, adapter)
     source = TargetManagerEnvironmentSource(target_manager)
     with pytest.raises(TypeError):
         source.collect_environment_contexts("target-A")
-    with pytest.raises(EnvironmentContextUnavailableError, match="target-missing"):
+    with pytest.raises(EnvironmentContextUnavailableError, match="environment collection failed"):
         source.collect_environment_contexts(["target-A", "target-missing"])
     adapter.calls.clear()
     result = source.collect_environment_contexts(["target-B", "target-B", "target-A"])

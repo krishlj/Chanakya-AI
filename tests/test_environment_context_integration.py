@@ -374,7 +374,7 @@ def test_adapter_not_auto_registered_on_a_fresh_target_manager():
 
     assert not result.succeeded
     assert result.environment_context is None
-    assert "no adapter registered" in result.error.lower()
+    assert result.error == "NO_ADAPTER_REGISTERED"
 
 
 def test_unregistered_target_type_remains_unavailable():
@@ -384,7 +384,7 @@ def test_unregistered_target_type_remains_unavailable():
 
     result = manager.collect_environment("target-eci-01")
     assert not result.succeeded
-    assert "no adapter registered" in result.error.lower()
+    assert result.error == "NO_ADAPTER_REGISTERED"
 
 
 # -- 15. LocalHostAdapter failure cannot become authorization -----------------
@@ -400,7 +400,7 @@ def test_adapter_collection_failure_returns_structured_failure_not_success():
     assert isinstance(result, EnvironmentCollectionResult)
     assert not result.succeeded
     assert result.environment_context is None
-    assert "adapter collection failed" in result.error.lower()
+    assert result.error == "ADAPTER_COLLECTION_FAILED"
 
 
 def test_adapter_failure_never_changes_target_status_or_gateway_verdict(list_listening_ports_entry, empty_policy_set):

@@ -1276,7 +1276,9 @@ def test_runtime_failure_surfaces_never_copy_request_headers(
         assert _credential_absent(surface)
         assert "x-api-key" not in surface.lower()
     error_events = [e for e in sink.events if e.event_type.value == "error"]
-    assert error_events and all(set(e.details) <= {"detail", "type", "reason"} for e in error_events)
+    # Phase 17: closed shape only (no exception text or class name).
+    assert error_events and all(set(e.details) <= {"reason", "category", "investigation_status"} for e in error_events)
+    assert all(e.details["category"] == "PROVIDER_FAILURE" for e in error_events)
 
 
 def test_no_production_code_reads_exception_request_or_headers():
@@ -1634,7 +1636,9 @@ def test_sdk_nonstreaming_max_tokens_guard_applies_only_to_default_timeout_clien
     assert transport.requests == []
     assert result.outcome == TurnOutcome.FAILED
     assert context.status == InvestigationStatus.FAILED
-    assert "Streaming is required" in str(result.detail)
+    # Phase 17: the SDK's message never crosses; the fixed category does.
+    assert result.detail == "PROVIDER_FAILURE"
+    assert "Streaming" not in json.dumps(context.error_state)
 
 
 def test_provider_request_overhead_is_bounded_relative_to_measured_context():

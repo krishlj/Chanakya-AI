@@ -111,3 +111,21 @@ class ToolExecutorRaisedError(RuntimeInvariantError):
     returning a ``ToolResult``. Raised in place of the original exception,
     whose text is withheld, so the existing fail-closed backstop records a
     fixed message and never the executor's exception text."""
+
+
+class ProviderFailedError(RuntimeInvariantError):
+    """Phase 17 (T-62): the model provider (SDK or remote) raised. Raised in
+    place of the original exception, whose text and class name are
+    withheld, so the fail-closed backstop records only ``PROVIDER_FAILURE``."""
+
+
+class ApprovalProviderFailedError(RuntimeInvariantError):
+    """Phase 17 (T-62): the approval provider raised instead of returning a
+    decision. It still fails closed (never an approval); only
+    ``APPROVAL_FAILURE`` is recorded."""
+
+
+class TerminalRecordUndurableError(AuditSinkError):
+    """Phase 17 (P17-INV-3): a terminal event could not be written because
+    the audit sink itself failed. The investigation is halted in memory as
+    ``audit_sink_failure`` and no durable terminal event is claimed."""

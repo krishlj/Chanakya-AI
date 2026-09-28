@@ -276,6 +276,18 @@ handler exception / timeout / late result → fixed Runtime code → backstop �
 - **Authority.** Failure codes carry none. See `docs/AGENT-RUNTIME.md`
   "Failure-path output control (Phase 16)".
 
+**Status (Phase 17):** the Runtime owns its error and terminal records.
+- **Signal, not text.** Provider, adapter, store and approval exceptions
+  are signals. Records carry only a closed `reason`, `category` and
+  bounded facts, never exception text or class names.
+- **Durable first.** A terminal transition is written to the audit log
+  before it is published. If the sink itself fails, the investigation halts
+  as `audit_sink_failure` with a record explicitly marked not durable.
+- **CLI.** It prints only these codes.
+
+See `docs/AGENT-RUNTIME.md` "Runtime-owned error and terminal records
+(Phase 17)".
+
 ## 9. Security Tool Registry
 
 The catalog of every capability the system knows how to run. Each entry
@@ -469,6 +481,11 @@ turn sequence are still in-memory Runtime state.
 and failure context entries are Runtime-owned codes, and Review flags
 anything else without echoing it. The log's credential screen is the
 tool-output screen.
+
+**Status (Phase 17):** contract `1.4.0`. `error` and `investigation_halted`
+details are closed Runtime records, and terminal events are written
+before the state changes. Review flags anything else without echoing it.
+The log remains tamper-evident, not tamper-proof (T-18).
 
 See `docs/AGENT-RUNTIME.md` "Durable authorization record and
 investigation review (Phase 12)".

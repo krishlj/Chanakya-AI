@@ -302,10 +302,13 @@ def run_investigation(
         if not context.is_terminal:
             runtime.manager.cancel(context.investigation_id, cancelled_by=runtime.approver)
 
-    reason = (context.error_state or {}).get("reason")
+    # Phase 17 (P17-INV-4): error_state holds only Runtime-owned codes.
+    state = context.error_state or {}
+    reason, category = state.get("reason"), state.get("category")
     output.write(
         f"final status: {context.status.value}"
-        + (f" (reason: {_safe(reason)})" if reason else "")
+        + (f" (reason: {_safe(reason)}, category: {_safe(category)})" if reason else "")
+        + (" [terminal record NOT durable: audit sink failed]" if state.get("terminal_record") == "not_durable" else "")
         + f"\nevidence records: {len(context.evidence_refs)}\n"
     )
     _report_findings(output, runtime, context.investigation_id)
@@ -407,7 +410,12 @@ def _render_review(output: TextIO, review: Any) -> None:
     write = output.write
     write(f"review: {_safe(review.investigation_id)}\n")
     write(f"status: {_safe(review.status.value)}")
-    write(f" (reason: {_safe(review.terminal_reason)})\n" if review.terminal_reason else "\n")
+    write(
+        (f" (reason: {_safe(review.terminal_reason)}" if review.terminal_reason else "")
+        + (f", category: {_safe(review.terminal_category)}" if review.terminal_category else "")
+        + (")" if review.terminal_reason else "")
+        + "\n"
+    )
     write(f"audit chain: {'verified' if review.audit_verified else 'NOT VERIFIED'} ({review.audit_record_count} records)\n")
     write(f"consistency: {'consistent' if review.consistent else f'{len(review.anomalies)} anomalies'}\n")
     if review.origin is not None:

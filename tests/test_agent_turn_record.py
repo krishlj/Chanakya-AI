@@ -619,7 +619,7 @@ def test_provider_failure_is_recorded_then_fails_closed(tmp_path):
     types = [e.event_type for e in _events(run)]
     assert types[1:3] == [E.AGENT_TURN_REQUESTED, E.AGENT_TURN_REJECTED]
     record = _outcomes(run)[0]
-    assert record["outcome"] == "provider_failure" and record["error_type"] == "TimeoutError"
+    assert record["outcome"] == "provider_failure" and record["error_type"] == "PROVIDER_FAILURE"  # Phase 17: never the class name
     assert record["raw_output_hash"] is None
     assert "network down" not in json.dumps(record)
     review = run.review()

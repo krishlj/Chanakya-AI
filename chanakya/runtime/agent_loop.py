@@ -58,6 +58,7 @@ from chanakya.contracts.approval import (
     ApprovalStatus,
 )
 from chanakya.contracts.enums import ModelEgress, Verdict
+from chanakya.contracts import runtime_failure as rf
 from chanakya.contracts.tool_failure import (
     CANCELLED as FAILURE_CANCELLED,
     failure_message,
@@ -111,6 +112,8 @@ from .exceptions import (
     ContextSourceError,
     ToolExecutorRaisedError,
     ProviderContractError,
+    ProviderFailedError,
+    ApprovalProviderFailedError,
     DispatchPreconditionError,
     EnvironmentContextScopeError,
     InvestigationTerminatedError,
@@ -415,7 +418,28 @@ class TurnResult:
     outcome: TurnOutcome
     step_record: Optional[StepRecord] = None
     tool_result: Optional[ToolResult] = None
+    #: Phase 17 (P17-INV-1/4): a Runtime-owned code
+    #: (``chanakya.contracts.runtime_failure.TURN_DETAIL_CODES``) or None.
+    #: Never exception, provider, adapter, store or model text.
     detail: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        if not rf.is_turn_detail(self.detail):
+            raise ValueError("TurnResult.detail must be a Runtime-owned code or None")
+
+
+def _backstop_category(exc: BaseException) -> str:
+    """Phase 17: which component failed, from Runtime-owned exception types
+    only. Never the exception's text or class name."""
+    if isinstance(exc, AuditSinkError):
+        return rf.AUDIT_FAILURE
+    if isinstance(exc, (ProviderFailedError, ProviderContractError)):
+        return rf.PROVIDER_FAILURE
+    if isinstance(exc, ApprovalProviderFailedError):
+        return rf.APPROVAL_FAILURE
+    if isinstance(exc, ToolExecutorRaisedError):
+        return rf.TOOL_EXECUTOR_FAILURE
+    return rf.RUNTIME_EXCEPTION
 
 
 class AgentLoopController:
@@ -536,7 +560,7 @@ class AgentLoopController:
             # FAILED via the generic fail-closed backstop.
             return TurnResult(
                 outcome=TurnOutcome.AWAITING_APPROVAL,
-                detail="investigation is already awaiting a pending approval decision",
+                detail=rf.AWAITING_APPROVAL_PENDING,
             )
 
         try:
@@ -556,11 +580,17 @@ class AgentLoopController:
         # with the same severity as an Evidence write failure: halt
         # rather than let an unaudited action proceed. Everything else
         # unexpected resolves to the generic `failed` terminal state.
+        #
+        # Phase 17 (P17-INV-1): the exception is a signal only. Records carry
+        # a reason and a category derived from Runtime-owned exception types;
+        # its message, arguments and class name are never recorded.
         is_audit_failure = isinstance(exc, AuditSinkError)
-        reason = "audit_sink_failure" if is_audit_failure else "unhandled_runtime_exception"
+        reason = rf.AUDIT_SINK_FAILURE if is_audit_failure else rf.UNHANDLED_RUNTIME_EXCEPTION
+        category = _backstop_category(exc)
+        del exc
 
         try:
-            self._audit.error(investigation_id, reason=reason, details={"detail": str(exc), "type": exc.__class__.__name__})
+            self._audit.error(investigation_id, reason=reason, details={"category": category})
         except Exception:
             pass  # the audit sink is already known (or newly suspected)
             # broken — reporting the failure must never itself crash the
@@ -578,12 +608,22 @@ class AgentLoopController:
                     # for this error path alone.
                     self._investigations.resume_running(investigation_id)
                 if is_audit_failure:
-                    self._investigations.halt(investigation_id, reason=reason, details={"detail": str(exc)})
-                    return TurnResult(outcome=TurnOutcome.HALTED, detail=str(exc))
-                self._investigations.fail(investigation_id, reason=reason, details={"detail": str(exc)})
+                    self._investigations.halt(investigation_id, reason=reason, category=category)
+                else:
+                    self._investigations.fail(investigation_id, reason=reason, category=category)
         except Exception:
-            pass  # already terminal, or otherwise un-transitionable — nothing further to do safely
-        return TurnResult(outcome=TurnOutcome.FAILED, detail=str(exc))
+            pass  # a genuine sink failure is reflected in the state below
+        return self._terminal_result(investigation_id, category)
+
+    def _terminal_result(self, investigation_id: str, category: str) -> TurnResult:
+        """Phase 17 (P17-INV-3): report the state the investigation is
+        actually in. If the terminal event could not be written (genuine
+        sink failure), the manager halted it as ``audit_sink_failure``."""
+        current = self._investigations.get(investigation_id)
+        state = current.error_state or {}
+        if current.status == InvestigationStatus.HALTED:
+            return TurnResult(outcome=TurnOutcome.HALTED, detail=state.get("category", category))
+        return TurnResult(outcome=TurnOutcome.FAILED, detail=state.get("category", category))
 
     def _run_turn_body(
         self,
@@ -595,11 +635,9 @@ class AgentLoopController:
     ) -> TurnResult:
         try:
             self._timeout_supervisor.check_investigation_timeout(investigation_id)
-        except ResourceLimitExceededError as exc:
-            self._investigations.halt(
-                investigation_id, reason="max_investigation_duration_seconds_exceeded", details={"detail": str(exc)}
-            )
-            return TurnResult(outcome=TurnOutcome.HALTED, detail=str(exc))
+        except ResourceLimitExceededError:
+            self._investigations.halt(investigation_id, reason="max_investigation_duration_seconds_exceeded")
+            return TurnResult(outcome=TurnOutcome.HALTED, detail=rf.RESOURCE_LIMIT_EXCEEDED)
 
         # Phase 14 (CT-INV-2): model-context data comes only from the tool
         # results this Runtime produced for this investigation. A caller may
@@ -678,24 +716,17 @@ class AgentLoopController:
             _verify_context_data(assembled, sources)
         except ContextSourceError as exc:
             return self._reject_context_sources(investigation_id, exc)
-        except (UnregisteredTargetError, TargetContextProjectionError, TargetContextScopeError) as exc:
-            self._investigations.fail(
-                investigation_id,
-                reason="target_context_unavailable",
-                details={"detail": str(exc), "type": exc.__class__.__name__},
-            )
-            return TurnResult(outcome=TurnOutcome.FAILED, detail=str(exc))
+        except (UnregisteredTargetError, TargetContextProjectionError, TargetContextScopeError):
+            # Phase 17: adapter/projection text is never recorded.
+            self._investigations.fail(investigation_id, reason="target_context_unavailable")
+            return TurnResult(outcome=TurnOutcome.FAILED, detail=rf.TARGET_CONTEXT_UNAVAILABLE)
         except (
             EnvironmentContextUnavailableError,
             EnvironmentContextProjectionError,
             EnvironmentContextScopeError,
-        ) as exc:
-            self._investigations.fail(
-                investigation_id,
-                reason="environment_context_unavailable",
-                details={"detail": str(exc), "type": exc.__class__.__name__},
-            )
-            return TurnResult(outcome=TurnOutcome.FAILED, detail=str(exc))
+        ):
+            self._investigations.fail(investigation_id, reason="environment_context_unavailable")
+            return TurnResult(outcome=TurnOutcome.FAILED, detail=rf.ENVIRONMENT_UNAVAILABLE)
 
         # Phase 5.5 (RG-INV-1): reject an oversized assembled context
         # BEFORE it is ever handed to the provider — ContextAssembler
@@ -719,11 +750,9 @@ class AgentLoopController:
         context_size = _estimate_size_bytes(measured)
         try:
             self._governor.check_context_size(context_size)
-        except ResourceLimitExceededError as exc:
-            self._investigations.halt(
-                investigation_id, reason="max_context_bytes_exceeded", details={"detail": str(exc)}
-            )
-            return TurnResult(outcome=TurnOutcome.HALTED, detail=str(exc))
+        except ResourceLimitExceededError:
+            self._investigations.halt(investigation_id, reason="max_context_bytes_exceeded")
+            return TurnResult(outcome=TurnOutcome.HALTED, detail=rf.RESOURCE_LIMIT_EXCEEDED)
 
         # Phase 14 (CT-INV-1): the manifest is durable before the provider is
         # called, and exactly one outcome is durable before any output is
@@ -737,12 +766,10 @@ class AgentLoopController:
         output_size = _estimate_size_bytes(raw_turn)
         try:
             self._governor.check_provider_output_size(output_size)
-        except ResourceLimitExceededError as exc:
+        except ResourceLimitExceededError:
             self._record_outcome(investigation_id, turn, AgentTurnOutcome.PROVIDER_OUTPUT_TOO_LARGE)
-            self._investigations.halt(
-                investigation_id, reason="max_provider_output_bytes_exceeded", details={"detail": str(exc)}
-            )
-            return TurnResult(outcome=TurnOutcome.HALTED, detail=str(exc))
+            self._investigations.halt(investigation_id, reason="max_provider_output_bytes_exceeded")
+            return TurnResult(outcome=TurnOutcome.HALTED, detail=rf.RESOURCE_LIMIT_EXCEEDED)
 
         outcome, turn_output, built_findings, capability, detail = self._classify_turn(investigation_id, context, turn)
         self._record_outcome(
@@ -844,8 +871,9 @@ class AgentLoopController:
             seen.add(result.tool_result_id)
 
     def _reject_context_sources(self, investigation_id: str, exc: ContextSourceError) -> TurnResult:
-        self._investigations.fail(investigation_id, reason="context_source_rejected", details={"detail": str(exc)})
-        return TurnResult(outcome=TurnOutcome.FAILED, detail=str(exc))
+        del exc  # Phase 17: a signal only; its text is never recorded.
+        self._investigations.fail(investigation_id, reason="context_source_rejected")
+        return TurnResult(outcome=TurnOutcome.FAILED, detail=rf.CONTEXT_SOURCE_REJECTED)
 
     def _call_provider(
         self,
@@ -861,12 +889,16 @@ class AgentLoopController:
         declared = _is_declared_provider(agent)
         prepared = None
         if declared:
-            identity = agent.provider_identity()
-            if not isinstance(identity, ProviderIdentity) or not identity.declared:
-                raise ProviderContractError("a declared provider must return a declared ProviderIdentity")
-            prepared = agent.prepare_turn(assembled)
-            if not isinstance(prepared, PreparedProviderRequest) or prepared.investigation_id != investigation_id:
-                raise ProviderContractError("provider prepared a request of the wrong shape or investigation")
+            try:
+                identity = agent.provider_identity()
+                if not isinstance(identity, ProviderIdentity) or not identity.declared:
+                    raise ProviderContractError("a declared provider must return a declared ProviderIdentity")
+                prepared = agent.prepare_turn(assembled)
+                if not isinstance(prepared, PreparedProviderRequest) or prepared.investigation_id != investigation_id:
+                    raise ProviderContractError("provider prepared a request of the wrong shape or investigation")
+            except Exception:
+                # Phase 17 (P17-INV-1): provider text never crosses.
+                raise ProviderFailedError("the provider failed before sending; its text is withheld") from None
             request_hash = prepared.request_hash
         else:
             # An in-process provider is handed the assembled context itself;
@@ -921,13 +953,17 @@ class AgentLoopController:
                 turn.tool_use_blocks = response.tool_use_blocks
             else:
                 turn.raw_turn = agent.next_turn(assembled)
-        except Exception as exc:
+        except Exception:
             # The provider produced nothing usable: record that, then let the
             # existing backstop fail the investigation (LLM-INV-9).
+            # Phase 17 (P17-INV-1): the SDK/remote exception is a signal
+            # only. Its message and class name are never recorded; the turn
+            # record carries the fixed category, and the backstop sees a
+            # Runtime-owned exception.
             self._record_outcome(
-                investigation_id, turn, AgentTurnOutcome.PROVIDER_FAILURE, error_type=type(exc).__name__
+                investigation_id, turn, AgentTurnOutcome.PROVIDER_FAILURE, error_type=rf.PROVIDER_FAILURE
             )
-            raise
+            raise ProviderFailedError("the provider failed; its text is withheld") from None
         turn.received = True
         return turn
 
@@ -936,23 +972,16 @@ class AgentLoopController:
         output. Returns ``(outcome, turn_output, built_findings,
         proposed_capability, detail)``. Stores nothing."""
         if turn.tool_use_blocks is not None and turn.tool_use_blocks > 1:
-            return AgentTurnOutcome.MULTIPLE_TOOL_USE_BLOCKS, None, None, None, (
-                f"provider returned {turn.tool_use_blocks} tool_use blocks; exactly one action per turn is accepted"
-            )
+            return AgentTurnOutcome.MULTIPLE_TOOL_USE_BLOCKS, None, None, None, rf.MULTIPLE_TOOL_USE_BLOCKS
         if turn.stop_reason is not None and turn.stop_reason not in ACCEPTED_STOP_REASONS:
-            return AgentTurnOutcome.UNSUPPORTED_STOP_REASON, None, None, None, (
-                "provider output stopped for an unsupported reason; nothing from it is used"
-            )
+            return AgentTurnOutcome.UNSUPPORTED_STOP_REASON, None, None, None, rf.UNSUPPORTED_STOP_REASON
         try:
             turn_output = AgentTurnOutput.from_dict(turn.raw_turn)
-        except MalformedAgentTurnOutputError as exc:
+        except MalformedAgentTurnOutputError:
             raw_action = turn.raw_turn.get("next_action") if isinstance(turn.raw_turn, Mapping) else None
-            outcome = (
-                AgentTurnOutcome.RESERVED_CHANNEL_MISUSE
-                if raw_action == "invalid_reserved_tool_use"
-                else AgentTurnOutcome.MALFORMED_TURN
-            )
-            return outcome, None, None, None, str(exc)
+            if raw_action == "invalid_reserved_tool_use":
+                return AgentTurnOutcome.RESERVED_CHANNEL_MISUSE, None, None, None, rf.RESERVED_CHANNEL_MISUSE
+            return AgentTurnOutcome.MALFORMED_TURN, None, None, None, rf.MALFORMED_TURN
         if turn_output.next_action == NextAction.CONCLUDE:
             if not turn_output.findings:
                 return AgentTurnOutcome.CONCLUSION, turn_output, None, None, None
@@ -962,13 +991,13 @@ class AgentLoopController:
                 return AgentTurnOutcome.FINDINGS, turn_output, None, None, None
             try:
                 built = self._build_findings(investigation_id, context, turn_output.findings)
-            except FindingValidationError as exc:
-                return AgentTurnOutcome.INVALID_FINDINGS, turn_output, None, None, str(exc)
+            except FindingValidationError:
+                return AgentTurnOutcome.INVALID_FINDINGS, turn_output, None, None, rf.INVALID_FINDINGS
             return AgentTurnOutcome.FINDINGS, turn_output, built, None, None
         try:
             request = ToolRequestIntake.intake(dict(turn_output.tool_request or {}))
-        except MalformedRequestError as exc:
-            return AgentTurnOutcome.MALFORMED_TOOL_REQUEST, turn_output, None, None, str(exc)
+        except MalformedRequestError:
+            return AgentTurnOutcome.MALFORMED_TOOL_REQUEST, turn_output, None, None, rf.MALFORMED_TOOL_REQUEST
         return AgentTurnOutcome.TOOL_REQUEST, turn_output, None, request.capability, None
 
     def _record_outcome(
@@ -1006,11 +1035,9 @@ class AgentLoopController:
         budget, so a flood of malformed output halts instead of looping."""
         try:
             self._governor.record_step_proposed(investigation_id)
-        except ResourceLimitExceededError as exc:
-            self._investigations.halt(
-                investigation_id, reason="max_steps_per_investigation_exceeded", details={"detail": str(exc)}
-            )
-            return TurnResult(outcome=TurnOutcome.HALTED, detail=str(exc))
+        except ResourceLimitExceededError:
+            self._investigations.halt(investigation_id, reason="max_steps_per_investigation_exceeded")
+            return TurnResult(outcome=TurnOutcome.HALTED, detail=rf.RESOURCE_LIMIT_EXCEEDED)
         return TurnResult(outcome=TurnOutcome.MALFORMED_TURN, detail=detail)
 
     # -- Phase 9: evidence-grounded findings (conclude turns only) ---------
@@ -1034,12 +1061,11 @@ class AgentLoopController:
         if self._finding_recorder is None:
             # Never silently drop findings the Agent reported.
             self._investigations.fail(
-                investigation_id, reason="finding_store_unavailable", details={"finding_count": len(raw_findings)}
+                investigation_id,
+                reason="finding_store_unavailable",
+                facts={rf.FACT_FINDING_COUNT: min(len(raw_findings), rf.MAX_FINDING_COUNT)},
             )
-            return (
-                TurnResult(outcome=TurnOutcome.FAILED, detail="findings reported but no finding store is configured"),
-                (),
-            )
+            return TurnResult(outcome=TurnOutcome.FAILED, detail=rf.FINDING_STORE_UNAVAILABLE), ()
         # Phase 14: the batch was validated (a rejection is recorded durably)
         # before the turn was accepted; ``built`` is that validated batch.
         findings = built if built is not None else self._build_findings(investigation_id, context, raw_findings)
@@ -1047,15 +1073,12 @@ class AgentLoopController:
         for finding in findings:
             try:
                 self._finding_recorder.append(finding)
-            except Exception as exc:
+            except Exception:
                 # Same posture as an Evidence write failure: halt rather
-                # than complete with an unrecorded conclusion.
-                self._investigations.halt(
-                    investigation_id,
-                    reason="finding_recording_failed",
-                    details={"detail": str(exc), "type": exc.__class__.__name__},
-                )
-                return TurnResult(outcome=TurnOutcome.HALTED, detail=str(exc)), ()
+                # than complete with an unrecorded conclusion. Phase 17: the
+                # store's exception text is never recorded.
+                self._investigations.halt(investigation_id, reason="finding_recording_failed")
+                return TurnResult(outcome=TurnOutcome.HALTED, detail=rf.FINDING_RECORDING_FAILED), ()
             context.add_finding_ref(finding.finding_id)
             self._audit.finding_created(investigation_id, finding.finding_id, finding.evidence_refs)
         return None, findings
@@ -1091,12 +1114,9 @@ class AgentLoopController:
         return None
 
     def _halt_risk_assessment(self, investigation_id: str, exc: Exception) -> TurnResult:
-        self._investigations.halt(
-            investigation_id,
-            reason="risk_assessment_failed",
-            details={"detail": str(exc), "type": exc.__class__.__name__},
-        )
-        return TurnResult(outcome=TurnOutcome.HALTED, detail=str(exc))
+        del exc  # Phase 17: engine/store text is never recorded.
+        self._investigations.halt(investigation_id, reason="risk_assessment_failed")
+        return TurnResult(outcome=TurnOutcome.HALTED, detail=rf.RISK_ASSESSMENT_FAILED)
 
     def _build_findings(
         self, investigation_id: str, context: InvestigationContext, raw_findings: Sequence[Mapping[str, Any]]
@@ -1146,8 +1166,10 @@ class AgentLoopController:
                         confidence=raw.get("confidence"),
                     )
                 )
-            except FindingValidationError as exc:
-                raise FindingValidationError(f"finding {index}: {exc}") from None
+            except FindingValidationError:
+                # Phase 17: the message names the index only; the rejected
+                # (model-authored) value is never echoed.
+                raise FindingValidationError(f"finding {index} is invalid") from None
         return tuple(findings)
 
     # -- ToolRequest -> intake -> policy -> (approval) -> dispatch, with bounded retry --
@@ -1157,11 +1179,9 @@ class AgentLoopController:
     ) -> TurnResult:
         try:
             self._governor.record_step_proposed(investigation_id)
-        except ResourceLimitExceededError as exc:
-            self._investigations.halt(
-                investigation_id, reason="max_steps_per_investigation_exceeded", details={"detail": str(exc)}
-            )
-            return TurnResult(outcome=TurnOutcome.HALTED, detail=str(exc))
+        except ResourceLimitExceededError:
+            self._investigations.halt(investigation_id, reason="max_steps_per_investigation_exceeded")
+            return TurnResult(outcome=TurnOutcome.HALTED, detail=rf.RESOURCE_LIMIT_EXCEEDED)
 
         raw_tool_request = dict(turn_output.tool_request or {})
         return self._run_attempt_with_retries(investigation_id, context, raw_tool_request)
@@ -1246,11 +1266,11 @@ class AgentLoopController:
 
         try:
             tool_request = ToolRequestIntake.intake(raw_tool_request)
-        except MalformedRequestError as exc:
+        except MalformedRequestError:
             # Never retried (invalid request) — RT-INV-5.
             step.transition(StepStatus.STEP_FAILED)
             context.end_current_step()
-            return TurnResult(outcome=TurnOutcome.MALFORMED_REQUEST, step_record=step, detail=str(exc))
+            return TurnResult(outcome=TurnOutcome.MALFORMED_REQUEST, step_record=step, detail=rf.MALFORMED_TOOL_REQUEST)
 
         # Phase 12: what was proposed, durable before the Gateway sees it.
         self._audit.request_proposed(
@@ -1336,10 +1356,16 @@ class AgentLoopController:
             return TurnResult(
                 outcome=TurnOutcome.AWAITING_APPROVAL,
                 step_record=step,
-                detail="no ApprovalProvider configured; dispatch blocked pending human approval",
+                detail=rf.NO_APPROVAL_PROVIDER,
             )
 
-        approval_decision = self._approval_provider.request_approval(approval_request)
+        try:
+            approval_decision = self._approval_provider.request_approval(approval_request)
+        except Exception:
+            # Phase 17 (P17-INV-1): an approval-provider error still fails
+            # closed through the backstop (never an approval), with its text
+            # withheld.
+            raise ApprovalProviderFailedError("the approval provider failed; its text is withheld") from None
         decided_check_time = self._clock()
         step.set_approval_decision_id(approval_decision.approval_decision_id)
 
@@ -1355,7 +1381,7 @@ class AgentLoopController:
             step.transition(StepStatus.STEP_DENIED)
             context.end_current_step()
             return TurnResult(
-                outcome=TurnOutcome.CANCELLED, step_record=step, detail="investigation ended while awaiting approval"
+                outcome=TurnOutcome.CANCELLED, step_record=step, detail=rf.INVESTIGATION_ENDED_DURING_APPROVAL
             )
 
         # Expiry: fail closed regardless of what the decision says — an
@@ -1372,13 +1398,13 @@ class AgentLoopController:
                 return TurnResult(
                     outcome=TurnOutcome.APPROVAL_EXPIRED,
                     step_record=step,
-                    detail="P4 approval expired; investigation halted per p4_approval_expiry_action",
+                    detail=rf.APPROVAL_EXPIRED,
                 )
             self._investigations.resume_running(investigation_id)
             return TurnResult(
                 outcome=TurnOutcome.APPROVAL_EXPIRED,
                 step_record=step,
-                detail="approval expired before a decision was recorded in time",
+                detail=rf.APPROVAL_EXPIRED_STEP_DENIED,
             )
 
         self._audit.approval_decided(
@@ -1436,7 +1462,7 @@ class AgentLoopController:
     ) -> TurnResult:
         try:
             self._governor.record_tool_call(investigation_id, tool_request.capability)
-        except ResourceLimitExceededError as exc:
+        except ResourceLimitExceededError:
             # step is DISPATCHING here (set by the caller just before this
             # method runs); the step-level machine only allows STEP_FAILED
             # from EXECUTING, so dispatch is recorded as having begun (it
@@ -1444,10 +1470,8 @@ class AgentLoopController:
             step.transition(StepStatus.EXECUTING)
             step.transition(StepStatus.STEP_FAILED)
             context.end_current_step()
-            self._investigations.halt(
-                investigation_id, reason="max_tool_calls_per_investigation_exceeded", details={"detail": str(exc)}
-            )
-            return TurnResult(outcome=TurnOutcome.HALTED, step_record=step, detail=str(exc))
+            self._investigations.halt(investigation_id, reason="max_tool_calls_per_investigation_exceeded")
+            return TurnResult(outcome=TurnOutcome.HALTED, step_record=step, detail=rf.RESOURCE_LIMIT_EXCEEDED)
 
         # Phase 11 (D-1): execution is constrained by the envelope the Gateway
         # attached to this decision, i.e. the Registry state it authorized.
@@ -1458,11 +1482,9 @@ class AgentLoopController:
             step.transition(StepStatus.EXECUTING)
             step.transition(StepStatus.STEP_FAILED)
             context.end_current_step()
-            detail = "authorized PolicyDecision carries no capability envelope for this capability"
-            self._investigations.fail(
-                investigation_id, reason="dispatch_precondition_violation", details={"detail": detail}
-            )
-            return TurnResult(outcome=TurnOutcome.FAILED, step_record=step, detail=detail)
+            # No envelope for exactly this capability: nothing is dispatched.
+            self._investigations.fail(investigation_id, reason="dispatch_precondition_violation")
+            return TurnResult(outcome=TurnOutcome.FAILED, step_record=step, detail=rf.DISPATCH_PRECONDITION_VIOLATION)
         # The Runtime ceiling can only tighten the Registry timeout (CE-INV-3).
         timeout_seconds = min(envelope.timeout_seconds, self._governor.limits.default_step_timeout_seconds)
         instruction = DispatchInstruction(
@@ -1493,15 +1515,13 @@ class AgentLoopController:
                 approval_request=approval_request,
                 approval_decision=approval_decision,
             )
-        except DispatchPreconditionError as exc:
+        except DispatchPreconditionError:
             # Should be unreachable given correct wiring above — treated
             # as a fatal Runtime condition, never silently swallowed.
             step.transition(StepStatus.STEP_FAILED)
             context.end_current_step()
-            self._investigations.fail(
-                investigation_id, reason="dispatch_precondition_violation", details={"detail": str(exc)}
-            )
-            return TurnResult(outcome=TurnOutcome.FAILED, step_record=step, detail=str(exc))
+            self._investigations.fail(investigation_id, reason="dispatch_precondition_violation")
+            return TurnResult(outcome=TurnOutcome.FAILED, step_record=step, detail=rf.DISPATCH_PRECONDITION_VIOLATION)
         except Exception:
             # Phase 16 (NX16-INV-1): an executor that raises (rather than
             # returning a ToolResult) still ends in the existing fail-closed
@@ -1526,7 +1546,7 @@ class AgentLoopController:
                 outcome=TurnOutcome.CANCELLED,
                 step_record=step,
                 tool_result=self._cancelled_result(tool_result),
-                detail="investigation ended during execution; result discarded",
+                detail=rf.INVESTIGATION_ENDED_DURING_EXECUTION,
             )
 
         if tool_result.status != ToolResultStatus.SUCCESS:
@@ -1541,9 +1561,9 @@ class AgentLoopController:
                 step.transition(StepStatus.STEP_FAILED)
                 context.end_current_step()
                 self._investigations.fail(
-                    investigation_id, reason="tool_failure_output_rejected", details={"code": problem}
+                    investigation_id, reason="tool_failure_output_rejected", facts={rf.FACT_CODE: problem}
                 )
-                return TurnResult(outcome=TurnOutcome.FAILED, step_record=step, detail=f"tool_failure_output_rejected: {problem}")
+                return TurnResult(outcome=TurnOutcome.FAILED, step_record=step, detail=rf.TOOL_FAILURE_OUTPUT_REJECTED)
 
         if tool_result.status == ToolResultStatus.SUCCESS:
             # Phase 15 (NX-INV-1/2): THE tool-output sensitivity gate. It runs
@@ -1617,7 +1637,7 @@ class AgentLoopController:
                 # (chanakya/evidence/store.py).
                 # (Built and screened above, before this block.)
                 evidence_id = self._evidence_recorder.record(evidence, evidence_payload)
-            except Exception as exc:
+            except Exception:
                 # docs/AGENT-RUNTIME.md §9: "the corresponding action is
                 # treated as not having durably happened... the
                 # investigation halts rather than continuing without
@@ -1628,11 +1648,11 @@ class AgentLoopController:
                 # rather than silently continuing as if nothing failed.
                 step.transition(StepStatus.EVIDENCE_FAILED)
                 context.end_current_step()
-                self._investigations.halt(
-                    investigation_id, reason="evidence_recording_failed", details={"detail": str(exc)}
-                )
+                # Phase 17: the store's exception text is never recorded.
+                self._investigations.halt(investigation_id, reason="evidence_recording_failed")
                 return TurnResult(
-                    outcome=TurnOutcome.HALTED, step_record=step, tool_result=tool_result, detail=str(exc)
+                    outcome=TurnOutcome.HALTED, step_record=step, tool_result=tool_result,
+                    detail=rf.EVIDENCE_RECORDING_FAILED,
                 )
 
             step.set_evidence_id(evidence_id)

@@ -55,9 +55,8 @@ class TargetManagerEnvironmentSource:
             seen.add(target_id)
             result = self.__target_manager.collect_environment(target_id)
             if not result.succeeded:
-                raise EnvironmentContextUnavailableError(
-                    f"environment collection failed for target {target_id!r}: {result.error}"
-                )
+                # Phase 17: a fixed message; the adapter's text never travels.
+                raise EnvironmentContextUnavailableError("environment collection failed")
             environment_context = result.environment_context
             # Phase 5.7.7: an adapter asked about one target must answer
             # about that target. Without this, a context the adapter labels
@@ -65,13 +64,9 @@ class TargetManagerEnvironmentSource:
             # binding check and be shown to the model as that other
             # target's observations.
             if not isinstance(environment_context, EnvironmentContext):
-                raise EnvironmentContextUnavailableError(
-                    f"environment collection for target {target_id!r} did not return an EnvironmentContext"
-                )
+                raise EnvironmentContextUnavailableError("environment collection did not return an EnvironmentContext")
             if type(environment_context.target_id) is not str or environment_context.target_id != target_id:
-                raise EnvironmentContextUnavailableError(
-                    f"environment collection for target {target_id!r} returned a context for a different target"
-                )
+                raise EnvironmentContextUnavailableError("environment collection returned a context for a different target")
             collected.append(environment_context)
         return tuple(collected)
 

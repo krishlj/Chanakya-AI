@@ -278,7 +278,7 @@ def test_t61_handler_exception_never_reaches_audit_context_provider_review_or_cl
     _assert_absent(_files_text(tmp_path / "audit"), TOKEN)
     failed = [e for e in run.events() if e.event_type == E.DISPATCH_FAILED]
     assert failed and {e.details["error_message"] for e in failed} == {HANDLER_EXCEPTION}
-    assert all(e.contract_version == "1.3.0" for e in run.events())
+    assert all(e.contract_version == "1.4.0" for e in run.events())
 
     # Review and CLI review.
     review = run.review()
@@ -467,9 +467,10 @@ def test_injected_executor_failure_text_fails_closed(
 
     assert result.outcome == TurnOutcome.FAILED
     assert result.tool_result is None
-    assert result.detail == f"tool_failure_output_rejected: {code}"
+    assert result.detail == "TOOL_FAILURE_OUTPUT_REJECTED"
     assert context.status == InvestigationStatus.FAILED
-    assert context.error_state == {"reason": "tool_failure_output_rejected", "code": code}
+    assert context.error_state == {"reason": "tool_failure_output_rejected",
+                                   "category": "TOOL_FAILURE_OUTPUT_REJECTED", "code": code}
     assert executor.call_count == 1  # never retried
     assert controller._context_window(inv) == ()
     assert [e.event_type for e in sink.events].count(E.DISPATCH_FAILED) == 0
@@ -840,9 +841,10 @@ def test_historical_streams_keep_their_semantics(tmp_path):
     _assert_absent(run2.cli_review()[1], TOKEN)
 
 
-def test_contract_version_is_1_3_0_and_history_stays_supported():
-    assert AUDIT_EVENT_CONTRACT_VERSION == "1.3.0"
-    assert {"1.0.0", "1.1.0", "1.2.0", "1.3.0"} == set(SUPPORTED_AUDIT_EVENT_VERSIONS)
+def test_contract_version_history_stays_supported():
+    # Phase 17 moved the emitted version to 1.4.0; 1.3.0 semantics remain.
+    assert AUDIT_EVENT_CONTRACT_VERSION == "1.4.0"
+    assert {"1.0.0", "1.1.0", "1.2.0", "1.3.0", "1.4.0"} == set(SUPPORTED_AUDIT_EVENT_VERSIONS)
 
 
 # ===========================================================================

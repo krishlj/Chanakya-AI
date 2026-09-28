@@ -347,7 +347,8 @@ def test_05_06_07_real_store_collision_halts_investigation_before_evidence_refs_
 
     # 6: the real Store genuinely raised EvidenceIdCollisionError — this
     # is not a fabricated/test-double failure.
-    assert result.detail is not None and "evidence_id already exists" in result.detail
+    # (Phase 17: the store's message is no longer echoed; the fixed code is.)
+    assert result.detail == "EVIDENCE_RECORDING_FAILED"
 
     # 8 (failure half): no evidence_recorded event; existing halt audit
     # behavior (investigation_halted) fired correctly.

@@ -163,6 +163,9 @@ class InvestigationReview:
     investigation_id: str
     status: ReviewStatus
     terminal_reason: Optional[str] = None
+    #: Phase 17: the Runtime-owned category of the terminal event (1.4.0
+    #: streams), or None.
+    terminal_category: Optional[str] = None
     audit_verified: bool = False
     audit_record_count: int = 0
     origin: Optional[Origin] = None

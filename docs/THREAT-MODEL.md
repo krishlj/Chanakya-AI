@@ -1485,6 +1485,52 @@ boundary. **Turn records are forensic records and carry no authority.**
 - **T-22 (Phase 16 addition).** No handler failure text leaves the host.
   Status unchanged: PARTIALLY MITIGATED (successful `allowed` output still
   does by design).
+- *(Corrected in Phase 17.)* "Now uniformly" above covers tool output,
+  failure text, audit details and fact builders. Finding, risk-rationale and
+  target/environment view screens still use older pattern sets; unifying
+  them is outside Phase 17.
+
+### Candidate threats from Phase 17 (Runtime-owned error and terminal records)
+
+- **T-62: free-form exception text from non-Runtime sources crossing
+  Runtime error/terminal boundaries** (TB-2 inbound, TB-8; T-03, T-20 and
+  T-54 aspects).
+  - *Before Phase 17:* the provider re-raised SDK/remote exceptions
+    unchanged. The backstop and 13 of 19 fail/halt sites wrote `str(exc)`
+    and the class name into `error`/`investigation_halted` details,
+    `error_state` and `TurnResult.detail`, which the CLI prints.
+    Reproduced:
+    - a provider error echoing an injection was persisted in the durable
+      audit log and printed;
+    - a credential-shaped or 70 KB error made the terminal audit write
+      fail. The backstop swallowed it, so the investigation was FAILED in
+      memory but `incomplete` in the durable record.
+
+    Adapter (`targets/manager.py`), store and approval exceptions took the
+    same path.
+  - *Controls (MITIGATED):*
+    - Runtime-owned exception types;
+    - a closed, bounded record (`reason`, `category`, closed facts)
+      validated before anything is written;
+    - fixed adapter codes;
+    - terminal events written before the state is published, with a
+      genuine sink failure halting explicitly as `audit_sink_failure` and
+      `terminal_record: not_durable`;
+    - `TurnResult.detail` restricted to codes, so the CLI prints codes only;
+    - Review 1.4.0 validation and withholding;
+    - an AST rule over the package (P17-INV-1..6).
+  - *Residual:* exception messages are not recorded anywhere (operator
+    diagnostics are coarser). A genuine sink failure leaves no durable
+    terminal event (reported as such). Full-chain rewrite (T-18).
+- **T-03 (Phase 17 addition).** Provider, adapter and store error text is
+  no longer an injection carrier into durable records or the CLI. It never
+  reached model context, and still does not.
+- **T-20 (Phase 17 addition).** Runtime error and terminal records carry
+  no exception text, so no credential can reach them through that channel.
+  Status unchanged: PARTIALLY MITIGATED (pattern-based screens elsewhere).
+- **T-54 (Phase 17 addition).** A terminal transition can no longer be
+  made undurable by external input. The durable record and Runtime state
+  agree, except on an explicit, reported sink failure.
 
 ---
 

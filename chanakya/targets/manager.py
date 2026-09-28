@@ -86,6 +86,19 @@ from .exceptions import (
 from .registry import TargetRegistry
 
 
+#: Phase 17 (T-62): the only values ``EnvironmentCollectionResult.error``
+#: takes. Fixed codes: an adapter's exception text or class name, or a
+#: target id, is never carried forward, so nothing adapter-controlled can
+#: reach a Runtime record through this path (before environment context is
+#: ever wired into the CLI).
+ENVIRONMENT_TARGET_NOT_REGISTERED = "TARGET_NOT_REGISTERED"
+ENVIRONMENT_NO_ADAPTER_REGISTERED = "NO_ADAPTER_REGISTERED"
+ENVIRONMENT_ADAPTER_COLLECTION_FAILED = "ADAPTER_COLLECTION_FAILED"
+ENVIRONMENT_COLLECTION_ERRORS = frozenset(
+    {ENVIRONMENT_TARGET_NOT_REGISTERED, ENVIRONMENT_NO_ADAPTER_REGISTERED, ENVIRONMENT_ADAPTER_COLLECTION_FAILED}
+)
+
+
 @dataclasses.dataclass(frozen=True)
 class EnvironmentCollectionResult:
     """The structured, always-returned (never-raised) outcome of
@@ -321,19 +334,18 @@ class TargetManager:
         """
         target = self._registry.get(target_id)
         if target is None:
-            return EnvironmentCollectionResult(target_id=target_id, error=f"target is not registered: {target_id!r}")
+            return EnvironmentCollectionResult(target_id=target_id, error=ENVIRONMENT_TARGET_NOT_REGISTERED)
 
         try:
             adapter = self.select_adapter(target.target_type)
-        except NoAdapterRegisteredError as exc:
-            return EnvironmentCollectionResult(target_id=target_id, error=str(exc))
+        except NoAdapterRegisteredError:
+            return EnvironmentCollectionResult(target_id=target_id, error=ENVIRONMENT_NO_ADAPTER_REGISTERED)
 
         try:
             environment_context = adapter.collect_environment(target)
-        except Exception as exc:  # adapter failure must never look like authorization — SR-9-style fail-closed
-            return EnvironmentCollectionResult(
-                target_id=target_id, error=f"{exc.__class__.__name__}: {exc}"
-            )
+        except Exception:  # adapter failure must never look like authorization — SR-9-style fail-closed
+            # Phase 17: the adapter's exception text and class are dropped.
+            return EnvironmentCollectionResult(target_id=target_id, error=ENVIRONMENT_ADAPTER_COLLECTION_FAILED)
 
         return EnvironmentCollectionResult(target_id=target_id, environment_context=environment_context)
 

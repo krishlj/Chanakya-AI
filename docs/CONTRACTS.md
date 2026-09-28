@@ -113,7 +113,7 @@ it references other contracts by id.
 | `risk_assessment_refs` | array\<string\> | optional | `risk_assessment_id`s produced so far |
 | `recommendation_refs` | array\<string\> | optional | `recommendation_id`s produced so far |
 | `current_step_id` | string | optional | The step currently in flight, if any |
-| `error_state` | object | optional | Present only when `status` is `failed`/`halted`; describes cause |
+| `error_state` | object | optional | Present only when `status` is `failed`/`halted`; describes cause. Phase 17: exactly a closed Runtime record `{"reason", "category", facts…}` (`chanakya.contracts.runtime_failure.terminal_record`), never exception text; `{"reason": "audit_sink_failure", "category": "AUDIT_FAILURE", "terminal_record": "not_durable"}` when the terminal event could not be written |
 
 **Validation requirements**
 - `investigation_id` is immutable once assigned.
@@ -898,6 +898,21 @@ five existing event types carry additive, bounded facts, defined in
 - **Review.** The read-only Investigation Review (`chanakya/review/`)
   validates these facts against closed shapes. They are a durable record,
   never an authorization input.
+
+**Version 1.4.0 (Phase 17).** A minor version, because recorded meaning
+narrows:
+- every `error` and `investigation_halted` event's `details` is exactly a
+  closed Runtime record: `reason` (closed), `category` (closed, allowed for
+  the reason), optional `code`/`finding_count`/`cancelled_by`, and
+  `investigation_status: "failed"` on a terminal `error`;
+- a provider-failure turn outcome's `error_type` is `PROVIDER_FAILURE`,
+  never an exception class name.
+
+Nothing that is only in an exception's text or class name is recorded.
+Older streams (1.0.0–1.3.0) may hold free-form `detail`/`type` keys and
+are still accepted. Review flags invalid 1.4.0 records
+(`terminal_details_invalid`, `turn_error_type_invalid`) without echoing
+them, and judges a mixed stream by its highest version.
 
 **Version 1.3.0 (Phase 16).** A minor version, because the meaning of a
 recorded field narrows: every `dispatch_failed.error_message` and every
