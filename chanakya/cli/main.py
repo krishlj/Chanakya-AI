@@ -70,8 +70,13 @@ from chanakya.contracts.target import Target, TargetStatus
 from chanakya.evidence import EvidenceStore
 from chanakya.findings import FindingStore
 from chanakya.policy import PolicyGateway, PolicyRule, PolicySet, RuleMatch
-from chanakya.providers.anthropic_provider import FORBIDDEN_SDK_ENVIRONMENT, AnthropicProvider
+from chanakya.providers.anthropic_provider import (
+    FORBIDDEN_SDK_ENVIRONMENT,
+    FORBIDDEN_TRANSPORT_ENVIRONMENT,
+    AnthropicProvider,
+)
 from chanakya.providers.config import ProviderConfig
+from chanakya.providers.transport import ProviderTransportError
 from chanakya.registry.bootstrap import production_registry_entries
 from chanakya.registry.registry import SecurityToolRegistry
 from chanakya.risk import RiskAssessmentStore, RiskEngine, StoreEvidenceFactsReader, verify_risk_provenance
@@ -575,6 +580,17 @@ def main(
     if redirecting:
         output.write(f"error: unset {', '.join(redirecting)}; the provider endpoint is fixed by configuration\n")
         return EXIT_CONFIG_ERROR
+    # Phase 18 (T-63): defense in depth. The transport never trusts the
+    # environment; these variables are still refused so the operator's
+    # intent is explicit. Names are checked and printed (they are fixed
+    # constants); values are never read.
+    transport_names = [name for name in FORBIDDEN_TRANSPORT_ENVIRONMENT if name in environ]
+    if transport_names:
+        output.write(
+            "error: provider transport environment refused (TRANSPORT_ENVIRONMENT_REFUSED); unset "
+            f"{', '.join(transport_names)}; the provider transport is fixed by configuration\n"
+        )
+        return EXIT_CONFIG_ERROR
     api_key = environ.get(config.api_key_env_var)  # the only read of the credential
     if not api_key:
         output.write(f"error: environment variable {config.api_key_env_var} is not set\n")
@@ -585,6 +601,10 @@ def main(
             args.workdir, approver=approver, require_approval=args.require_approval, input_fn=input_fn, output=output
         )
         agent = AnthropicProvider(config, api_key)
+    except ProviderTransportError as exc:
+        # Phase 18: the fixed code only (never a client, header or value).
+        output.write(f"error: provider transport rejected ({exc.code})\n")
+        return EXIT_CONFIG_ERROR
     except ValueError as exc:
         output.write(f"error: {_safe(str(exc))}\n")
         return EXIT_CONFIG_ERROR

@@ -65,6 +65,14 @@ What it checks:
    (``terminal_details_invalid``, ``turn_error_type_invalid``); the reason
    and category are then withheld, never echoed. In older streams only a
    plain reason token is shown.
+10. **Provider transport (Phase 18, P18-INV-5).** For streams written under
+    AuditEvent 1.5.0, every manifest's provider identity must carry a
+    ``transport`` policy: for a declared provider exactly the verified,
+    environment-isolated policy under a transport-isolated config version;
+    for an undeclared provider ``null``. A missing, altered or non-isolated
+    policy is flagged (``turn_transport_policy_invalid``) and the turn is not
+    reconstructed from it. A transport change between turns is a provider
+    mismatch. Older streams make no transport claim.
 
 Anomalies are fixed codes plus, at most, an identifier.
 """
@@ -141,6 +149,7 @@ class _Builder:
         self.egress_era = False
         self.failure_era = False
         self.terminal_era = False
+        self.transport_era = False
         self.terminal_category: Optional[str] = None
         # Phase 16: the recorded failure text per tool request, used only to
         # compare hashes; never exposed in the review.
@@ -177,6 +186,7 @@ class _Builder:
         self.egress_era = strictest >= (1, 2, 0)
         self.failure_era = strictest >= (1, 3, 0)
         self.terminal_era = strictest >= (1, 4, 0)
+        self.transport_era = strictest >= (1, 5, 0)
 
     def replay(self, records) -> None:
         for index, record in enumerate(records):
@@ -425,7 +435,9 @@ class _Builder:
         if not self.turn_era:
             self.flag("turn_event_unsupported_version", subject)
             return False
-        problems = validate_turn_details(kind, details, egress_recorded=self.egress_era)
+        problems = validate_turn_details(
+            kind, details, egress_recorded=self.egress_era, transport_recorded=self.transport_era
+        )
         for code in problems:
             self.flag(code, subject)
         return not problems
@@ -454,9 +466,9 @@ class _Builder:
             if identity.endpoint != first.endpoint:
                 self.flag("turn_endpoint_mismatch", turn_id)
             if (identity.provider, identity.model, identity.config_version, identity.declared,
-                    identity.timeout_seconds, identity.max_tokens) != (
+                    identity.timeout_seconds, identity.max_tokens, identity.transport) != (
                     first.provider, first.model, first.config_version, first.declared,
-                    first.timeout_seconds, first.max_tokens):
+                    first.timeout_seconds, first.max_tokens, first.transport):
                 self.flag("turn_provider_mismatch", turn_id)
         if details["template_version"] != INSTRUCTIONS_TEMPLATE_VERSION:
             self.flag("turn_template_unknown", turn_id)

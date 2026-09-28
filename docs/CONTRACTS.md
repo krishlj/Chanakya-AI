@@ -899,6 +899,15 @@ five existing event types carry additive, bounded facts, defined in
   validates these facts against closed shapes. They are a durable record,
   never an authorization input.
 
+**Version 1.5.0 (Phase 18).** A minor version, because a recorded shape
+gains a field: every `agent_turn_requested` provider identity carries
+`transport`. For a declared provider, `transport` is the verified,
+environment-isolated policy under provider config `1.1.0`; for an
+undeclared one it is `null`. Older streams (1.0.0–1.4.0) make no transport
+claim and are still accepted. Review flags a missing, altered or
+non-isolated policy in a 1.5.0 stream (`turn_transport_policy_invalid`)
+without echoing it, and judges a mixed stream by its highest version.
+
 **Version 1.4.0 (Phase 17).** A minor version, because recorded meaning
 narrows:
 - every `error` and `investigation_halted` event's `details` is exactly a
@@ -1017,7 +1026,7 @@ failed write halts the investigation). A provider exception is recorded as
 | `capability_catalog_hash` | hash | Of the catalog offered to the model |
 | `target_context_hash` / `environment_context_hash` | hash or null | Of the model-visible views; null when absent |
 | `context_entries` | array (≤ 5) | Ordered: `position`, `source` (`tool_result:<id>`), `source_kind` (`evidence` or `tool_result_error`), `tool_result_id`, `step_id`, `evidence_id` (evidence only), `content_hash`; from 1.2.0 also `capability` and `model_egress` (always `allowed`: an entry of any other egress cannot be recorded, so the turn halts) |
-| `provider` | object | `provider`, `model`, `endpoint`, `config_version`, `timeout_seconds`, `max_tokens`, `declared` |
+| `provider` | object | `provider`, `model`, `endpoint`, `config_version`, `timeout_seconds`, `max_tokens`, `declared`; from AuditEvent 1.5.0 also `transport`: the verified `TransportPolicy` (`proxy: "none"`, `tls_trust: "system"`/`"in_process"`, `env_trust: false`, `redirects: false`, `retries: 0`, `sdk_debug_logging: false`) for a declared provider (config version `1.1.0`), `null` for an undeclared one. Policy only; never a URL, path, header, token or key |
 | `provider_request_hash` | hash | Canonical hash of the exact request structure sent (declared providers), or of the assembled context handed to an in-process provider |
 
 **`agent_turn_received` / `agent_turn_rejected` details (outcome)**

@@ -22,6 +22,7 @@ import pytest
 
 import chanakya.cli.main as cli_main
 from chanakya.contracts.agent_turn import (
+    TransportPolicy,
     INSTRUCTIONS_TEMPLATE_VERSION,
     MAX_CONTEXT_ENTRIES,
     MAX_EXPLANATION_CHARS,
@@ -123,7 +124,7 @@ def _provider(*responses: Mapping[str, Any], findings: bool = True, **config: An
     fields.update(config)
     client = anthropic.Anthropic(
         api_key=SENTINEL_KEY, base_url=ProviderConfig(**fields).effective_endpoint, max_retries=0,
-        http_client=httpx2.Client(transport=httpx2.MockTransport(transport.handler)),
+        http_client=httpx2.Client(trust_env=False, transport=httpx2.MockTransport(transport.handler)),
     )
     return AnthropicProvider(ProviderConfig(**fields), SENTINEL_KEY, client=client), transport
 
@@ -373,9 +374,11 @@ def test_manifest_is_deterministic_for_the_same_context(tmp_path):
 
 def test_golden_manifest_outcome_identity_and_request():
     """Pinned shapes and hashes: a change to any of them must be deliberate."""
+    # Phase 18: the pinned identity records the verified transport policy.
     identity = ProviderIdentity(
         provider="anthropic", model="claude-test-model", endpoint="https://api.anthropic.com",
-        config_version="1.0.0", timeout_seconds=30.0, max_tokens=4096,
+        config_version="1.1.0", timeout_seconds=30.0, max_tokens=4096,
+        transport=TransportPolicy(tls_trust="system"),
     )
     manifest = ContextManifest(
         turn_id=derive_agent_turn_id("inv-golden", 2), turn_sequence=2,
@@ -416,7 +419,9 @@ def test_declared_provider_identity_is_recorded(tmp_path):
     assert _turn(run, provider).outcome == TurnOutcome.CONCLUDED
     assert _manifests(run)[0]["provider"] == {
         "provider": "anthropic", "model": "claude-test-model", "endpoint": "https://api.anthropic.com",
-        "config_version": "1.0.0", "timeout_seconds": 12.5, "max_tokens": 777, "declared": True,
+        "config_version": "1.1.0", "timeout_seconds": 12.5, "max_tokens": 777, "declared": True,
+        # Phase 18: the verified policy (an in-process mock transport here).
+        "transport": {"proxy": "none", "tls_trust": "in_process", "env_trust": False, "redirects": False, "retries": 0, "sdk_debug_logging": False},
     }
 
 

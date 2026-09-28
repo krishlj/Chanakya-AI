@@ -256,7 +256,7 @@ def test_t61_handler_exception_never_reaches_audit_context_provider_review_or_cl
 
     config = ProviderConfig(provider="anthropic", model="claude-test-model", api_key_env_var="K", timeout_seconds=5)
     client = anthropic.Anthropic(api_key="sk-test", base_url=config.effective_endpoint,
-                                 http_client=httpx2.Client(transport=httpx2.MockTransport(handler)))
+                                 http_client=httpx2.Client(trust_env=False, transport=httpx2.MockTransport(handler)))
     provider = AnthropicProvider(config, "sk-test", client=client)
     catalog = run.runtime.registry.catalog_view()
 
@@ -278,7 +278,7 @@ def test_t61_handler_exception_never_reaches_audit_context_provider_review_or_cl
     _assert_absent(_files_text(tmp_path / "audit"), TOKEN)
     failed = [e for e in run.events() if e.event_type == E.DISPATCH_FAILED]
     assert failed and {e.details["error_message"] for e in failed} == {HANDLER_EXCEPTION}
-    assert all(e.contract_version == "1.4.0" for e in run.events())
+    assert all(e.contract_version == "1.5.0" for e in run.events())
 
     # Review and CLI review.
     review = run.review()
@@ -762,6 +762,9 @@ def _forge_failure_text(run: Run, text: str, *, version: str = None) -> None:
                         entry["content_hash"] = hash_json_normalized(text)
             if version is not None:
                 event["contract_version"] = version
+                # A genuine pre-1.5.0 manifest has no transport policy.
+                if event["event_type"] == "agent_turn_requested":
+                    details["provider"].pop("transport", None)
         return events
 
     rewrite_events(run.stream_dir(), mutate)
@@ -842,9 +845,9 @@ def test_historical_streams_keep_their_semantics(tmp_path):
 
 
 def test_contract_version_history_stays_supported():
-    # Phase 17 moved the emitted version to 1.4.0; 1.3.0 semantics remain.
-    assert AUDIT_EVENT_CONTRACT_VERSION == "1.4.0"
-    assert {"1.0.0", "1.1.0", "1.2.0", "1.3.0", "1.4.0"} == set(SUPPORTED_AUDIT_EVENT_VERSIONS)
+    # Phase 18 moved the emitted version to 1.5.0; 1.3.0 semantics remain.
+    assert AUDIT_EVENT_CONTRACT_VERSION == "1.5.0"
+    assert {"1.0.0", "1.1.0", "1.2.0", "1.3.0", "1.4.0", "1.5.0"} == set(SUPPORTED_AUDIT_EVENT_VERSIONS)
 
 
 # ===========================================================================

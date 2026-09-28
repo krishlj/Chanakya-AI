@@ -203,7 +203,7 @@ def provider_built_transport(monkeypatch) -> _RealTransportRecorder:
 def _mock_client(transport: RecordingTransport, *, max_retries: int = 0) -> anthropic.Anthropic:
     return anthropic.Anthropic(
         api_key=SENTINEL_KEY,
-        http_client=httpx2.Client(transport=httpx2.MockTransport(transport.handler)),
+        http_client=httpx2.Client(trust_env=False, transport=httpx2.MockTransport(transport.handler)),
         max_retries=max_retries,
     )
 
@@ -308,7 +308,7 @@ def test_request_body_with_all_optional_config_values():
     client = anthropic.Anthropic(
         api_key=SENTINEL_KEY,
         base_url="https://gateway.example.test",
-        http_client=httpx2.Client(transport=httpx2.MockTransport(transport.handler)),
+        http_client=httpx2.Client(trust_env=False, transport=httpx2.MockTransport(transport.handler)),
         max_retries=0,
     )
     config = _config(max_output_tokens=321, temperature=0.25, endpoint="https://gateway.example.test")
@@ -1291,6 +1291,13 @@ def test_no_production_code_reads_exception_request_or_headers():
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if isinstance(node, ast.Attribute) and node.attr in {"request", "headers", "response"}:
+                # Phase 18, the one reviewed access: the transport verifier
+                # iterates the HTTP client's *default header names* (never an
+                # exception's request, never a value) to reject injected
+                # clients carrying extra headers. Nothing is recorded.
+                if path.relative_to(_CHANAKYA_ROOT).as_posix() == "providers/transport.py" and node.attr == "headers" \
+                        and isinstance(node.value, ast.Name) and node.value.id == "http":
+                    continue
                 offending.append(f"{path.relative_to(_REPO_ROOT)}:{node.lineno}:{node.attr}")
     assert offending == []
 
@@ -1305,7 +1312,18 @@ def test_no_production_code_reads_exception_request_or_headers():
 
 
 def test_guard_blocks_the_real_transport_even_when_a_test_forgets_the_mock():
-    client = anthropic.Anthropic(api_key=SENTINEL_KEY, max_retries=0)  # real default transport
+    # Phase 18: an SDK-default client (environment trust on) is refused
+    # before any network attempt...
+    from chanakya.providers.transport import ProviderTransportError
+
+    with pytest.raises(ProviderTransportError):
+        AnthropicProvider(_config(), SENTINEL_KEY, client=anthropic.Anthropic(api_key=SENTINEL_KEY, max_retries=0))
+    # ...and an environment-isolated real transport is still stopped by the
+    # test network guard.
+    client = anthropic.Anthropic(
+        api_key=SENTINEL_KEY, max_retries=0,
+        http_client=anthropic.DefaultHttpxClient(trust_env=False, follow_redirects=False),
+    )
     provider = AnthropicProvider(_config(), SENTINEL_KEY, client=client)
     with pytest.raises(Exception) as excinfo:
         provider.next_turn(_assembled_context())

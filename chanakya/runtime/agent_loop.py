@@ -891,7 +891,9 @@ class AgentLoopController:
         if declared:
             try:
                 identity = agent.provider_identity()
-                if not isinstance(identity, ProviderIdentity) or not identity.declared:
+                if not isinstance(identity, ProviderIdentity) or not identity.declared or identity.transport is None:
+                    # Phase 18: a declared provider must also declare its
+                    # verified transport policy, or nothing is sent.
                     raise ProviderContractError("a declared provider must return a declared ProviderIdentity")
                 prepared = agent.prepare_turn(assembled)
                 if not isinstance(prepared, PreparedProviderRequest) or prepared.investigation_id != investigation_id:

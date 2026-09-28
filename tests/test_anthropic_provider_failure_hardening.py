@@ -128,7 +128,7 @@ class RecordingTransport:
     def client(self, *, max_retries: int = 0, timeout: Optional[float] = None) -> anthropic.Anthropic:
         kwargs: Dict[str, Any] = dict(
             api_key=FAKE_API_KEY,
-            http_client=httpx2.Client(transport=httpx2.MockTransport(self.handler)),
+            http_client=httpx2.Client(trust_env=False, transport=httpx2.MockTransport(self.handler)),
             max_retries=max_retries,
         )
         if timeout is not None:
@@ -152,7 +152,7 @@ class RaisingTransport:
     def client(self, *, max_retries: int = 0) -> anthropic.Anthropic:
         return anthropic.Anthropic(
             api_key=FAKE_API_KEY,
-            http_client=httpx2.Client(transport=httpx2.MockTransport(self.handler)),
+            http_client=httpx2.Client(trust_env=False, transport=httpx2.MockTransport(self.handler)),
             max_retries=max_retries,
         )
 
@@ -175,7 +175,7 @@ class SequencedTransport:
     def client(self) -> anthropic.Anthropic:
         return anthropic.Anthropic(
             api_key=FAKE_API_KEY,
-            http_client=httpx2.Client(transport=httpx2.MockTransport(self.handler)),
+            http_client=httpx2.Client(trust_env=False, transport=httpx2.MockTransport(self.handler)),
             max_retries=0,
         )
 
@@ -198,9 +198,19 @@ class _RawExceptionMessages:
         raise self._exc
 
 
-class _RawExceptionClient:
-    def __init__(self, exc: BaseException) -> None:
-        self.messages = _RawExceptionMessages(exc)
+def _RawExceptionClient(exc: BaseException):
+    """Phase 18: a real, transport-verified SDK client (environment trust
+    off, in-process transport) whose ``messages`` resource raises ``exc``
+    directly, so the exception is still NOT a member of the SDK hierarchy.
+    Duck-typed non-SDK clients are rejected by the provider (they cannot be
+    verified)."""
+    raw = _RawExceptionMessages(exc)
+    # A subclass property survives the SDK's with_options() copy.
+    client_class = type("_RawClient", (anthropic.Anthropic,), {"messages": property(lambda self: raw)})
+    return client_class(
+        api_key="sk-test-raw", base_url="https://api.anthropic.com", max_retries=0,
+        http_client=httpx2.Client(trust_env=False, transport=httpx2.MockTransport(lambda request: httpx2.Response(500))),
+    )
 
 
 def _conclude_response(text: str = "investigation complete") -> Dict[str, Any]:

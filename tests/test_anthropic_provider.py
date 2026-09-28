@@ -80,7 +80,7 @@ class RecordingTransport:
     def client(self) -> anthropic.Anthropic:
         return anthropic.Anthropic(
             api_key=FAKE_API_KEY,
-            http_client=httpx2.Client(transport=httpx2.MockTransport(self.handler)),
+            http_client=httpx2.Client(trust_env=False, transport=httpx2.MockTransport(self.handler)),
         )
 
 
@@ -565,7 +565,7 @@ def test_connection_error_propagates_unmodified():
 
     client = anthropic.Anthropic(
         api_key=FAKE_API_KEY,
-        http_client=httpx2.Client(transport=httpx2.MockTransport(raising_handler)),
+        http_client=httpx2.Client(trust_env=False, transport=httpx2.MockTransport(raising_handler)),
         max_retries=0,
     )
     provider = AnthropicProvider(_config(), FAKE_API_KEY, client=client)

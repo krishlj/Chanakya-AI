@@ -96,6 +96,7 @@ from chanakya.runtime.context_assembler import AssembledContext
 
 from . import mapping
 from .config import ProviderConfig
+from .transport import build_http_client, check_sdk_logging, verify_client
 
 #: Phase 14 (T-59): environment variables through which the Anthropic SDK
 #: would take a security-sensitive setting (destination, extra headers, a
@@ -105,6 +106,19 @@ from .config import ProviderConfig
 #: This module reads no environment: it passes an explicit ``base_url`` and
 #: then verifies the built client's actual endpoint and headers.
 FORBIDDEN_SDK_ENVIRONMENT = ("ANTHROPIC_BASE_URL", "ANTHROPIC_CUSTOM_HEADERS", "ANTHROPIC_PROFILE")
+
+#: Phase 18 (T-63): environment variables that would influence the provider
+#: transport (route, TLS trust roots, credentials, SDK logging) if the
+#: transport trusted the environment. It does not (``trust_env=False`` and
+#: post-construction verification, ``chanakya.providers.transport``); the CLI
+#: still refuses to start while any is present, as defense in depth and to
+#: make operator intent explicit. Names only: values are never read.
+FORBIDDEN_TRANSPORT_ENVIRONMENT = (
+    "HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "NO_PROXY",
+    "https_proxy", "http_proxy", "all_proxy", "no_proxy",
+    "SSL_CERT_FILE", "SSL_CERT_DIR", "NETRC",
+    "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_LOG",
+)
 
 
 def _normalized_endpoint(value: Any) -> str:
@@ -154,16 +168,21 @@ class AnthropicProvider:
         # a real SDK client is checked to target exactly that endpoint with
         # no custom headers (ANTHROPIC_CUSTOM_HEADERS would add some), or
         # construction fails closed.
-        if client is None:
+        #
+        # Phase 18 (T-63, P18-INV-1..4): the transport is built explicitly
+        # with environment trust disabled (no proxy, CA, netrc or other
+        # environment input), then the *effective* client, built here or
+        # injected, is verified; anything unverifiable fails closed with
+        # ``ProviderTransportError``. Only the verified policy is recorded.
+        check_sdk_logging()
+        built_here = client is None
+        if built_here:
             client = anthropic.Anthropic(
                 api_key=api_key,
                 base_url=config.effective_endpoint,
                 timeout=config.timeout_seconds,
                 max_retries=0,
-                http_client=anthropic.DefaultHttpxClient(
-                    follow_redirects=False,
-                    timeout=config.timeout_seconds,
-                ),
+                http_client=build_http_client(config.timeout_seconds),
             )
         if isinstance(client, anthropic.Anthropic):
             if _normalized_endpoint(client.base_url) != _normalized_endpoint(config.effective_endpoint):
@@ -176,6 +195,9 @@ class AnthropicProvider:
             # errors, so no retry is needed here. Applied to injected clients
             # too (same transport, retries off).
             client = client.with_options(max_retries=0)
+        self._endpoint = _normalized_endpoint(config.effective_endpoint)
+        self._expected_timeout = float(config.timeout_seconds) if built_here else None
+        transport = verify_client(client, endpoint=self._endpoint, expected_timeout=self._expected_timeout)
         self._client = client
         self._identity = ProviderIdentity(
             provider=config.provider,
@@ -184,6 +206,7 @@ class AnthropicProvider:
             config_version=config.provider_config_version,
             timeout_seconds=float(config.timeout_seconds),
             max_tokens=mapping.effective_max_tokens(config),
+            transport=transport,
         )
 
     # -- Phase 14: declared identity and a two-phase, recordable call ----------
@@ -208,6 +231,13 @@ class AnthropicProvider:
         request_kwargs = copy.deepcopy(dict(prepared.payload))
         if hash_value(request_kwargs) != prepared.request_hash:
             raise ValueError("prepared provider request does not match its recorded hash")
+        # Phase 18: re-checked at every send, before any byte leaves: SDK
+        # debug logging (which would copy the body) and the transport the
+        # recorded policy describes.
+        check_sdk_logging()
+        verified = verify_client(self._client, endpoint=self._endpoint, expected_timeout=self._expected_timeout)
+        if verified != self._identity.transport:
+            raise ValueError("provider transport changed after verification")
         response = self._client.messages.create(**request_kwargs)
         convert = (
             mapping.response_to_turn_mapping_with_findings
@@ -224,4 +254,4 @@ class AnthropicProvider:
         first. Raises whatever the SDK call raises (LLM-INV-9)."""
         return self.send_turn(self.prepare_turn(assembled_context)).turn
 
-__all__ = ["AnthropicProvider", "FORBIDDEN_SDK_ENVIRONMENT"]
+__all__ = ["AnthropicProvider", "FORBIDDEN_SDK_ENVIRONMENT", "FORBIDDEN_TRANSPORT_ENVIRONMENT"]

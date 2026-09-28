@@ -57,7 +57,9 @@ DEFAULT_ANTHROPIC_ENDPOINT = "https://api.anthropic.com"
 
 #: Phase 14: the version of this provider configuration, recorded in every
 #: agent turn record so the configuration a turn ran under is identifiable.
-PROVIDER_CONFIG_VERSION = "1.0.0"
+#: 1.1.0 (Phase 18): the transport is environment-isolated and verified
+#: (``chanakya.providers.transport``); the identity records its policy.
+PROVIDER_CONFIG_VERSION = "1.1.0"
 
 
 @dataclass(frozen=True)

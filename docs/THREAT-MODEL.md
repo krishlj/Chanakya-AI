@@ -1532,6 +1532,50 @@ boundary. **Turn records are forensic records and carry no authority.**
   made undurable by external input. The durable record and Runtime state
   agree, except on an explicit, reported sink failure.
 
+### Candidate threats from Phase 18 (provider transport environment isolation)
+
+- **T-63: environment-controlled provider transport** (TB-2; extends T-59,
+  T-21, T-22).
+  - *Attacker:* can set environment variables in the operator's process
+    (shell profile, CI, a wrapper). This is the same capability T-59
+    assumed.
+  - *Before Phase 18:* the SDK's HTTP client trusted the environment.
+    - `HTTPS_PROXY`/`ALL_PROXY` mounted a proxy transport to the
+      attacker's host;
+    - `SSL_CERT_FILE`/`SSL_CERT_DIR` replaced the trust roots, so a proxy
+      plus a CA allowed full interception of the API key and all model
+      context, and forged responses;
+    - `ANTHROPIC_LOG=debug` wrote the request body to stderr.
+
+    The durable `ProviderIdentity` still claimed the explicit endpoint.
+    Phase 18 also found that `anthropic.DefaultHttpxClient` mounts
+    environment proxies even with `trust_env=False`. (netrc is not applied
+    by httpx2 2.13 unless an explicit `NetRCAuth` is given.)
+  - *Controls (MITIGATED):*
+    - an explicitly built transport with `trust_env=False` on client and
+      transport, system trust store, no redirects and no retries;
+    - post-construction verification of the effective client (production
+      or injected), repeated at every send, failing closed with a fixed
+      code;
+    - an SDK debug-logging check;
+    - CLI refusal of the known variables (names only), as defense in
+      depth;
+    - the verified policy recorded in every 1.5.0 manifest and verified by
+      Review (P18-INV-1..6).
+  - *Residual:* no certificate pinning (the OS trust store is trusted);
+    verification depends on SDK/transport internals and fails closed if
+    they change; dependencies are unlocked (T-23).
+- **T-59 (corrected in Phase 18).** The Phase 14 "MITIGATED" status covered
+  the endpoint URL and SDK headers only; the transport stayed
+  environment-controlled until Phase 18 (T-63). With T-63 mitigated, T-59
+  is MITIGATED as originally intended.
+- **T-21 (Phase 18 addition).** The API key cannot be routed through an
+  environment proxy, intercepted with an environment CA or logged by SDK
+  debug logging; it is still held in process memory.
+- **T-22 (Phase 18 addition).** Model context leaves the host only on the
+  verified, recorded transport. Status unchanged: PARTIALLY MITIGATED
+  (`allowed` output leaves by design).
+
 ---
 
 ## 9. Security controls (consolidated)

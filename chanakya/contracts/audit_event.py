@@ -55,9 +55,15 @@ class AuditEventType(str, Enum):
 #: every ``error`` and ``investigation_halted`` event carries exactly a
 #: closed-shape Runtime record (``chanakya.contracts.runtime_failure``) and
 #: a provider-failure turn outcome records only ``PROVIDER_FAILURE`` as its
-#: ``error_type``; earlier streams may hold exception text there.
-AUDIT_EVENT_CONTRACT_VERSION = "1.4.0"
-SUPPORTED_AUDIT_EVENT_VERSIONS = frozenset({"1.0.0", "1.1.0", "1.2.0", "1.3.0", AUDIT_EVENT_CONTRACT_VERSION})
+#: ``error_type``; earlier streams may hold exception text there. 1.5.0
+#: (Phase 18) means every manifest's provider identity carries a
+#: ``transport`` policy: for a declared provider, the verified,
+#: environment-isolated policy (``proxy: none``, ``env_trust: false``,
+#: ``tls_trust: system``/``in_process``, no redirects, no retries, no SDK
+#: debug logging) under provider config ``1.1.0``; for an undeclared one,
+#: ``null``. Earlier streams make no transport claim.
+AUDIT_EVENT_CONTRACT_VERSION = "1.5.0"
+SUPPORTED_AUDIT_EVENT_VERSIONS = frozenset({"1.0.0", "1.1.0", "1.2.0", "1.3.0", "1.4.0", AUDIT_EVENT_CONTRACT_VERSION})
 
 
 def version_tuple(version: str) -> tuple:

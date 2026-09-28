@@ -154,6 +154,63 @@ def derive_agent_turn_id(investigation_id: str, turn_sequence: int) -> str:
 # -- provider identity and the prepared request ----------------------------------
 
 
+#: Phase 18 (T-63): the verified provider transport policy values.
+PROXY_NONE = "none"
+TLS_TRUST_SYSTEM = "system"          # TLS verified against the system trust store
+TLS_TRUST_IN_PROCESS = "in_process"  # an in-process transport: no network I/O, no TLS
+TLS_TRUST_VALUES = frozenset({TLS_TRUST_SYSTEM, TLS_TRUST_IN_PROCESS})
+TRANSPORT_POLICY_KEYS = frozenset({"proxy", "tls_trust", "env_trust", "redirects", "retries", "sdk_debug_logging"})
+
+
+@dataclass(frozen=True)
+class TransportPolicy:
+    """Phase 18: the provider transport security policy that was *verified*
+    on the effective client (``chanakya.providers.transport.verify_client``),
+    recorded in every AuditEvent 1.5.0 manifest. Policy only, never a
+    secret: no proxy URL, CA path, header, token or environment value. The
+    only permitted values are the isolated ones."""
+
+    tls_trust: str
+    proxy: str = PROXY_NONE
+    env_trust: bool = False
+    redirects: bool = False
+    retries: int = 0
+    sdk_debug_logging: bool = False
+
+    def __post_init__(self) -> None:
+        if (
+            self.proxy != PROXY_NONE
+            or self.tls_trust not in TLS_TRUST_VALUES
+            or self.env_trust is not False
+            or self.redirects is not False
+            or type(self.retries) is not int
+            or self.retries != 0
+            or self.sdk_debug_logging is not False
+        ):
+            raise AuditFactError(FACT_INVALID, "transport")
+
+    def to_details(self) -> Dict[str, Any]:
+        return {
+            "proxy": self.proxy,
+            "tls_trust": self.tls_trust,
+            "env_trust": self.env_trust,
+            "redirects": self.redirects,
+            "retries": self.retries,
+            "sdk_debug_logging": self.sdk_debug_logging,
+        }
+
+
+def transport_policy_from_details(details: Any) -> Optional[TransportPolicy]:
+    """``None`` unless ``details`` is exactly a valid transport policy."""
+    if not isinstance(details, Mapping) or set(details) != TRANSPORT_POLICY_KEYS:
+        return None
+    try:
+        policy = TransportPolicy(**{k: details[k] for k in TRANSPORT_POLICY_KEYS})
+    except (AuditFactError, TypeError):
+        return None
+    return policy if policy.to_details() == dict(details) else None
+
+
 @dataclass(frozen=True)
 class ProviderIdentity:
     """Which provider, model and endpoint serve a turn, under which
@@ -168,9 +225,14 @@ class ProviderIdentity:
     timeout_seconds: Optional[float]
     max_tokens: Optional[int]
     declared: bool = True
+    #: Phase 18 (AuditEvent 1.5.0): the verified transport policy of a
+    #: declared provider; ``None`` for an undeclared (in-process) provider.
+    transport: Optional[TransportPolicy] = None
 
     def __post_init__(self) -> None:
         text_fact("provider", self.provider)
+        if self.transport is not None and (not self.declared or not isinstance(self.transport, TransportPolicy)):
+            raise AuditFactError(FACT_INVALID, "transport")
         if self.declared:
             text_fact("model", self.model)
             text_fact("endpoint", self.endpoint)
@@ -193,6 +255,7 @@ class ProviderIdentity:
             "timeout_seconds": self.timeout_seconds,
             "max_tokens": self.max_tokens,
             "declared": self.declared,
+            "transport": self.transport.to_details() if self.transport is not None else None,
         }
 
 
@@ -421,9 +484,15 @@ CONTEXT_ENTRY_KEYS_V1 = frozenset(
 #: Phase 15 (AuditEvent 1.2.0): each entry also names its capability and
 #: its Registry-declared egress.
 CONTEXT_ENTRY_KEYS = CONTEXT_ENTRY_KEYS_V1 | {"capability", "model_egress"}
-PROVIDER_KEYS = frozenset(
+PROVIDER_KEYS_V1 = frozenset(
     {"provider", "model", "endpoint", "config_version", "timeout_seconds", "max_tokens", "declared"}
 )
+#: Phase 18 (AuditEvent 1.5.0): the identity also records the verified
+#: transport policy.
+PROVIDER_KEYS = PROVIDER_KEYS_V1 | {"transport"}
+#: Provider configuration versions whose transport is environment-isolated
+#: (``chanakya.providers.config.PROVIDER_CONFIG_VERSION``).
+TRANSPORT_ISOLATED_CONFIG_VERSIONS = frozenset({"1.1.0"})
 OUTCOME_KEYS = frozenset(
     {
         "turn_id", "turn_sequence", "outcome", "accepted", "provider_request_hash", "raw_output_hash",
@@ -449,16 +518,44 @@ def _is_text(value: Any, *, optional: bool = False) -> bool:
     return True
 
 
-def _provider_from_details(details: Any) -> Optional[ProviderIdentity]:
-    if not isinstance(details, Mapping) or set(details) != PROVIDER_KEYS or type(details["declared"]) is not bool:
+def _provider_from_details(details: Any, *, transport_recorded: Optional[bool] = None) -> Optional[ProviderIdentity]:
+    """``transport_recorded`` True: AuditEvent 1.5.0 shape (the identity
+    carries ``transport``); False: the 1.1.0–1.4.0 shape; None: either."""
+    if not isinstance(details, Mapping) or type(details.get("declared")) is not bool:
         return None
+    keys = set(details)
+    if transport_recorded is None:
+        transport_recorded = keys == PROVIDER_KEYS
+    if keys != (PROVIDER_KEYS if transport_recorded else PROVIDER_KEYS_V1):
+        return None
+    fields = {k: details[k] for k in PROVIDER_KEYS_V1}
+    if transport_recorded and details["transport"] is not None:
+        fields["transport"] = transport_policy_from_details(details["transport"])
+        if fields["transport"] is None:
+            return None
     try:
-        return ProviderIdentity(**{k: details[k] for k in PROVIDER_KEYS})
+        return ProviderIdentity(**fields)
     except (AuditFactError, TypeError):
         return None
 
 
-def validate_turn_details(event_type: str, details: Any, *, egress_recorded: bool = True) -> List[str]:
+def transport_problem(details: Any) -> Optional[str]:
+    """Phase 18 (Review, AuditEvent 1.5.0): a declared provider must record
+    a valid, isolated transport policy under a transport-isolated
+    configuration version; an undeclared one records none."""
+    identity = _provider_from_details(details, transport_recorded=True)
+    if identity is None:
+        return "turn_transport_policy_invalid"
+    if identity.declared and (
+        identity.transport is None or identity.config_version not in TRANSPORT_ISOLATED_CONFIG_VERSIONS
+    ):
+        return "turn_transport_policy_invalid"
+    return None
+
+
+def validate_turn_details(
+    event_type: str, details: Any, *, egress_recorded: bool = True, transport_recorded: bool = True
+) -> List[str]:
     """Problems with stored turn ``details``, as fixed codes. Closed key
     sets; wrong types, unsafe text and malformed hashes are reported.
     ``egress_recorded`` is True for AuditEvent 1.2.0+ streams, whose context
@@ -483,7 +580,18 @@ def validate_turn_details(event_type: str, details: Any, *, egress_recorded: boo
             or not _is_hash(details["environment_context_hash"], optional=True)
         ):
             problems.append("details_value_invalid")
-        if _provider_from_details(details["provider"]) is None:
+        provider = details["provider"]
+        base = {k: v for k, v in provider.items() if k != "transport"} if isinstance(provider, Mapping) else None
+        if _provider_from_details(base, transport_recorded=False) is None:
+            problems.append("turn_provider_invalid")
+        elif transport_recorded:
+            # Phase 18: the identity is otherwise valid; its transport
+            # policy is judged on its own (missing, altered, non-isolated,
+            # wrong config version, or claimed by an undeclared provider).
+            problem = transport_problem(provider)
+            if problem is not None:
+                problems.append(problem)
+        elif "transport" in provider:
             problems.append("turn_provider_invalid")
         entries = details["context_entries"]
         if not isinstance(entries, list) or len(entries) > MAX_CONTEXT_ENTRIES:
@@ -543,6 +651,14 @@ def provider_identity_from_details(details: Any) -> Optional[ProviderIdentity]:
 
 
 __all__ = [
+    "PROXY_NONE",
+    "TLS_TRUST_IN_PROCESS",
+    "TLS_TRUST_SYSTEM",
+    "TRANSPORT_ISOLATED_CONFIG_VERSIONS",
+    "TRANSPORT_POLICY_KEYS",
+    "TransportPolicy",
+    "transport_policy_from_details",
+    "transport_problem",
     "ACCEPTED_OUTCOMES",
     "ACCEPTED_STOP_REASONS",
     "AgentTurnOutcome",

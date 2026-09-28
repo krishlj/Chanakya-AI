@@ -1813,6 +1813,7 @@ this is not conversation memory, and nothing is resumable.
 | CT-INV-2 | Model context contains only data produced within the same investigation and composed by the Runtime. | `test_runtime_composes_context_from_its_own_results`, `test_context_window_is_the_latest_results_in_order`, `test_foreign_investigation_result_is_rejected_and_never_reaches_the_provider`, `test_caller_supplied_results_cannot_select_or_inject_context`, `test_an_assembler_that_adds_data_is_rejected` |
 | CT-INV-3 | Every rejected model output is durably recorded by safe reason code and integrity hash, without persisting unsafe raw content. | `test_rejected_provider_outputs_are_recorded_and_never_used`, `test_reserved_channel_misuse_is_recorded`, `test_malformed_turn_and_malformed_request_are_recorded`, `test_invalid_findings_are_recorded_and_nothing_is_stored`, `test_oversized_output_is_recorded_then_halts`, `test_raw_model_output_is_never_persisted` |
 | CT-INV-4 | Provider destination and identity are explicit, recorded, and never silently taken from implicit environment variables. | `test_declared_provider_identity_is_recorded`, `test_provider_request_hash_is_the_hash_of_the_exact_request_sent`, `test_prepared_request_is_reverified_before_sending`, `test_cli_refuses_environment_that_could_redirect_the_provider`, `test_environment_base_url_never_changes_the_recorded_or_used_endpoint`, `test_custom_headers_on_a_client_fail_closed`, `test_unsafe_endpoints_are_rejected` |
+| (CT-INV-4, corrected in Phase 18) | Until Phase 18 the environment could still route the transport (proxy), replace TLS trust roots and enable request logging; only the endpoint and headers were explicit (T-63). P18-INV-1..5 close this. | `tests/test_provider_transport_isolation.py` |
 | CT-INV-5 | Turn records carry no authority: policy, approval, dispatch and risk never use them. | `test_turn_records_are_unreachable_from_authorization_execution_and_risk`, `test_evaluation_context_carries_no_turn_data`, `test_turn_data_does_not_change_what_policy_approval_and_dispatch_receive`, `test_turn_records_are_not_fed_back_into_model_context` |
 | CT-INV-6 | Review verifies turn manifests against Evidence and recorded context artifacts. | `test_review_reconstructs_turns_consistently`, the `test_review_detects_*` tests (missing manifest or outcome, rejected output without a record, duplicates and gaps, forged request hash, provider or endpoint change, context mismatches, tampered Evidence, instruction mismatch, events after terminal, completion without an accepted turn), `test_turn_events_do_not_exist_before_contract_1_1_0` |
 | CT-INV-7 | No credential reaches durable turn records. | `test_unsafe_explanations_are_withheld_never_persisted`, `test_raw_model_output_is_never_persisted`, `test_credential_shaped_capability_name_halts_before_use`, `test_no_credential_or_header_reaches_turn_records`, `test_stored_details_validator_rejects_unsafe_or_inconsistent_records` |
@@ -2160,6 +2161,109 @@ exception (provider / adapter / store / approval / executor / Runtime)
 - The Gateway's deny `reason` for a malformed request or schema violation
   is Runtime/validator text over already-screened parameters. It is a
   policy fact, not a terminal record, and is unchanged.
+
+#### Provider transport environment isolation (Phase 18)
+
+**Why.** Phase 14 (CT-INV-4, T-59) made the provider *endpoint* explicit.
+It did not isolate the *transport* underneath: the SDK's HTTP client
+trusted the process environment. As a result:
+- `HTTPS_PROXY`/`ALL_PROXY` (either case) routed the connection through
+  another host;
+- `SSL_CERT_FILE`/`SSL_CERT_DIR` replaced the TLS trust roots, so a proxy
+  plus a CA could intercept the API key and all model context;
+- `ANTHROPIC_LOG=debug` wrote the request body to stderr.
+
+Meanwhile the durable `ProviderIdentity` claimed only
+`https://api.anthropic.com` (T-63).
+
+**The control is structural; the denylist is not the boundary.**
+
+```
+ProviderConfig (trusted)
+  → build_http_client: httpx2.Client(trust_env=False, follow_redirects=False, timeout)
+                       + HTTPTransport(verify=True, trust_env=False)   [system trust store, no mounts]
+  → anthropic.Anthropic(explicit base_url, explicit api_key, max_retries=0)
+  → verify_client(effective client)  ── fail closed ──> ProviderTransportError(<CODE>)
+  → ProviderIdentity(..., transport = the VERIFIED TransportPolicy)
+  → every send: check_sdk_logging() + verify_client() again, then the request
+```
+
+- **Construction (`chanakya.providers.transport.build_http_client`).**
+  Environment trust is off on both the client and the transport. TLS is
+  verified against the system trust store (`truststore`), with no
+  redirects and the configured timeout.
+  - It does **not** use `anthropic.DefaultHttpxClient`. In anthropic 1.7.0
+    that constructor mounts proxies from the environment even when
+    `trust_env=False` is passed. The verifier found this during Phase 18,
+    and a regression test pins it.
+- **Verification (`verify_client`), applied to the production client and
+  to any injected client.**
+  - *SDK level:* the endpoint is equal and `https`; retries are 0; there
+    is no bearer token (`auth_headers` is exactly `X-Api-Key`); there are
+    no custom headers or query; the timeout is bounded (equal to the
+    configuration for a client built here, ≤ 600 s for an injected one).
+  - *HTTP level:* `trust_env` is false; there are no mounts (no proxy);
+    redirects are off; there is no `auth` (so no netrc, basic or custom
+    hook) and no request/response hooks; only httpx2's own default
+    headers; no cookies or params.
+  - *Transport:* `HTTPTransport` with no proxy and a `truststore` context
+    with `CERT_REQUIRED` and hostname checking (`tls_trust: system`), or
+    `MockTransport` (`tls_trust: in_process`: an in-process handler, no
+    network I/O). Any other transport, a plain `ssl.SSLContext` (a custom
+    CA) or disabled verification is rejected, as is a non-SDK client.
+
+  Private fields (`Anthropic._client`, `Client._mounts`,
+  `HTTPTransport._pool`) are read only in two isolated helpers. If they are
+  not what is expected, verification fails closed.
+- **Logging (`check_sdk_logging`).** Construction and every send fail
+  closed if the `anthropic`, `httpx2` or `httpcore2` logger would emit
+  DEBUG records, including when an application sets DEBUG globally. The
+  Runtime records this as `PROVIDER_FAILURE`.
+- **CLI refusal (defense in depth).** In addition to `ANTHROPIC_BASE_URL`,
+  `ANTHROPIC_CUSTOM_HEADERS` and `ANTHROPIC_PROFILE`, the CLI refuses to
+  start while any of `FORBIDDEN_TRANSPORT_ENVIRONMENT` is present:
+  `HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY`, `NO_PROXY` and their lower-case
+  forms, `SSL_CERT_FILE`, `SSL_CERT_DIR`, `NETRC`, `ANTHROPIC_AUTH_TOKEN`
+  and `ANTHROPIC_LOG`. The error is `TRANSPORT_ENVIRONMENT_REFUSED`. Only
+  names are checked, and values are never read, printed or stored. An
+  unlisted variable (e.g. `SSLKEYLOGFILE`) still cannot affect the
+  transport.
+- **Durable policy (provider config `1.1.0`, AuditEvent 1.5.0).**
+  `ProviderIdentity.transport` is the verified `TransportPolicy`:
+  `proxy: none`, `tls_trust: system|in_process`, `env_trust: false`,
+  `redirects: false`, `retries: 0`, `sdk_debug_logging: false`. It is only
+  policy, never a URL, path, header, token or key. The Runtime refuses a
+  declared provider without one. Undeclared (in-process) providers record
+  `transport: null`.
+- **Review.** For 1.5.0 streams, a declared provider's transport must be
+  exactly the isolated policy under a transport-isolated config version,
+  and an undeclared provider may claim none. Anything missing, altered or
+  non-isolated is flagged (`turn_transport_policy_invalid`) and not
+  echoed. A transport change between turns is a provider mismatch. Mixed
+  1.4.0/1.5.0 streams are flagged and judged as 1.5.0. Older streams make
+  no transport claim.
+- **Authority.** Transport policy is provider metadata. Policy, approval,
+  risk, the Registry, capability, dispatch, intake and retry never
+  reference it.
+
+| ID | Invariant | Tests (`tests/test_provider_transport_isolation.py`) |
+|---|---|---|
+| P18-INV-1 | No environment variable changes the provider route; the transport has no proxy mounts. | `test_proxy_variable_is_refused_by_the_cli_and_cannot_route_the_transport` (6 variables), `test_no_proxy_manipulation_has_no_effect`, `test_sdk_default_client_mounts_environment_proxies_despite_trust_env`, `test_production_transport_is_explicit_isolated_and_verified` |
+| P18-INV-2 | The environment cannot replace the TLS trust roots. | `test_ssl_cert_file_is_refused_and_never_loaded`, `test_ssl_cert_dir_is_refused_and_never_loaded`, `test_a_client_with_a_custom_ca_context_is_rejected`, `test_an_unlisted_environment_variable_cannot_weaken_the_transport` |
+| P18-INV-3 | SDK/transport debug logging cannot emit investigation data. | `test_anthropic_log_is_refused_by_the_cli`, `test_debug_sdk_logger_fails_construction_closed`, `test_debug_logger_after_construction_fails_the_send_closed` |
+| P18-INV-4 | An insecure client, injected or tampered with, cannot enter the provider. | `test_insecure_injected_clients_are_rejected` (13 cases), `test_wrong_or_plaintext_endpoint_is_rejected`, `test_custom_sdk_headers_are_rejected`, `test_duck_typed_clients_cannot_be_verified_and_are_rejected`, `test_retries_are_normalized_to_zero_and_never_silently_reenabled`, `test_transport_tampered_after_verification_fails_the_send_closed`, `test_netrc_is_refused_and_never_honored`, `test_environment_auth_token_is_refused_and_never_sent` |
+| P18-INV-5 | 1.5.0 streams record and Review verifies the transport policy. | `test_phase18_streams_record_and_verify_the_transport_policy`, `test_review_flags_a_forged_transport_policy_without_echoing_it` (8 cases), `test_review_flags_a_missing_transport_policy`, `test_an_undeclared_provider_may_not_claim_a_transport`, `test_mixed_1_4_and_1_5_streams_are_flagged_and_judged_strictly`, `test_historical_1_4_streams_make_no_transport_claim_and_stay_consistent` |
+| P18-INV-6 | Transport metadata carries no authority. | `test_transport_policy_is_unreachable_from_authority`, `test_policy_decisions_are_identical_for_any_transport_policy` |
+
+**Limitations.**
+- No certificate pinning: trust is the system store, so a CA the operating
+  system trusts is trusted.
+- No corporate proxy support: a proxy cannot be configured.
+- The verifier depends on SDK and transport internals (anthropic 1.7.0,
+  httpx2 2.13.0). A dependency change that moves them fails closed
+  rather than open. Dependencies are not locked (T-23).
+- The policy records what was verified in this process. It is not an
+  attestation that a remote party can check (T-18 applies to the log).
 
 **`RuntimeExecutionLimits`** — admin-controlled configuration (trusted,
 versioned, not Agent-writable), analogous to `PolicySet`.

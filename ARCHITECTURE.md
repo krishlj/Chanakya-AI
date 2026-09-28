@@ -143,6 +143,8 @@ Runtime → Context Manifest → Provider Request → Provider Response → Turn
 - **After the call.** Exactly one accepted or rejected outcome is durable
   before any output is used.
 - **Destination.** The provider endpoint never comes from the environment.
+  *(Phase 18: until then the transport under it did: proxy, TLS trust roots
+  and SDK logging. See the Phase 18 status below.)*
 - **Authority.** Turn records are forensic records and carry no authority.
   See `docs/CONTRACTS.md` §14 and `docs/AGENT-RUNTIME.md` "Durable agent
   turn record (Phase 14)".
@@ -486,6 +488,18 @@ tool-output screen.
 details are closed Runtime records, and terminal events are written
 before the state changes. Review flags anything else without echoing it.
 The log remains tamper-evident, not tamper-proof (T-18).
+
+**Status (Phase 18):** contract `1.5.0`.
+- **Isolated transport.** The provider transport is built explicitly with
+  environment trust off (no proxy, no environment CA, no redirects, no
+  retries, system trust store).
+- **Verified.** The effective client is verified before use and at every
+  send; SDK debug logging fails closed.
+- **Recorded.** Every manifest records the verified transport policy, and
+  Review checks it.
+- **Not included:** certificate pinning and proxy support. See
+  `docs/AGENT-RUNTIME.md` "Provider transport environment isolation
+  (Phase 18)".
 
 See `docs/AGENT-RUNTIME.md` "Durable authorization record and
 investigation review (Phase 12)".

@@ -219,7 +219,7 @@ def test_t60_sensitive_output_never_reaches_evidence_context_or_provider(
 
     config = ProviderConfig(provider="anthropic", model="claude-test-model", api_key_env_var="K", timeout_seconds=5)
     client = anthropic.Anthropic(api_key="sk-test", base_url=config.effective_endpoint,
-                                 http_client=httpx2.Client(transport=httpx2.MockTransport(handler)))
+                                 http_client=httpx2.Client(trust_env=False, transport=httpx2.MockTransport(handler)))
     second = controller.run_turn(inv, AnthropicProvider(config, "sk-test", client=client))
 
     assert second.outcome == TurnOutcome.CONCLUDED
@@ -562,6 +562,7 @@ def test_historical_streams_predate_the_control_and_are_not_reported_as_screened
             if event["event_type"] == "policy_evaluated" and details.get("envelope"):
                 details["envelope"].pop("model_egress")
             if event["event_type"] == "agent_turn_requested":
+                details["provider"].pop("transport", None)  # pre-1.5.0 shape
                 for entry in details["context_entries"]:
                     entry.pop("capability")
                     entry.pop("model_egress")
@@ -646,7 +647,7 @@ def test_one_recorded_turn_is_one_provider_send(tmp_path):
 
     config = ProviderConfig(provider="anthropic", model="claude-test-model", api_key_env_var="K", timeout_seconds=5)
     client = anthropic.Anthropic(api_key="sk-test", base_url=config.effective_endpoint, max_retries=2,
-                                 http_client=httpx2.Client(transport=httpx2.MockTransport(handler)))
+                                 http_client=httpx2.Client(trust_env=False, transport=httpx2.MockTransport(handler)))
     run = Run(tmp_path).start()
     result = run.runtime.controller.run_turn(run.inv, AnthropicProvider(config, "sk-test", client=client))
     assert result.outcome == TurnOutcome.FAILED
