@@ -115,6 +115,15 @@ def test_runtime_lock_is_the_runtime_part_of_the_test_lock():
     assert "pytest" in test and "pytest" not in runtime
 
 
+def test_license_is_mit_and_declared_once():
+    assert _PROJECT["license"] == "MIT"
+    assert _PROJECT["license-files"] == ["LICENSE"]
+    assert not any(c.startswith("License ::") for c in _PROJECT.get("classifiers", []))
+    text = (_REPO / "LICENSE").read_text(encoding="utf-8")
+    assert text.startswith("MIT License\n\nCopyright (c) 2026 krishlj\n")
+    assert 'THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND' in text
+
+
 def test_locks_ship_in_the_source_distribution():
     manifest = (_REPO / "MANIFEST.in").read_text(encoding="utf-8")
     assert "include requirements.lock requirements-test.lock" in manifest
