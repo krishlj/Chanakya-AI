@@ -190,6 +190,12 @@ _TARGET_CONTEXT_KEY = "investigation_targets"
 #: any change to the Runtime-authored system text.
 _ENVIRONMENT_CONTEXT_KEY = "untrusted_environment_observations"
 
+#: Sent with every request that carries tools. ``auto`` never forces a tool
+#: call (a text-only or ``report_findings`` conclusion stays possible);
+#: ``disable_parallel_tool_use`` limits the reply to at most one tool_use
+#: block, matching the Runtime's one-action-per-turn invariant (CT-INV-3).
+_TOOL_CHOICE = {"type": "auto", "disable_parallel_tool_use": True}
+
 
 def build_request_kwargs(assembled_context: AssembledContext, config: ProviderConfig) -> MutableMapping[str, Any]:
     """Builds the keyword arguments for ``anthropic.Anthropic().messages.create``.
@@ -243,6 +249,11 @@ def build_request_kwargs(assembled_context: AssembledContext, config: ProviderCo
         )
     if tools:
         kwargs["tools"] = tools
+        # The Runtime accepts one action per turn (CT-INV-3) and rejects a
+        # response with several tool_use blocks as a whole. Ask the API for
+        # the same thing, so a parallel-tool reply is not produced in the
+        # first place. The Runtime check stays the authority.
+        kwargs["tool_choice"] = dict(_TOOL_CHOICE)
 
     return kwargs
 

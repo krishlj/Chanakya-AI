@@ -258,7 +258,8 @@ def test_hostile_target_values_stay_target_data(hostile):
     body = transport.last_request_body
 
     assert body["system"] == _INSTRUCTIONS  # 1. system byte-identical
-    assert set(body) == {"model", "system", "messages", "max_tokens", "tools"}  # 5. no new top-level field
+    assert set(body) == {"model", "system", "messages", "max_tokens", "tools", "tool_choice"}  # 5. no new top-level field
+    assert body["tool_choice"] == {"type": "auto", "disable_parallel_tool_use": True}  # fixed, not target-derived
     assert body["model"] == "claude-test-model" and body["max_tokens"] == 4096  # 6. config not overwritten
     assert len(body["messages"]) == 1 and body["messages"][0]["role"] == "user"
     assert user_payload(transport)["investigation_targets"] == [hostile.as_model_mapping()]  # 2/3. value, verbatim

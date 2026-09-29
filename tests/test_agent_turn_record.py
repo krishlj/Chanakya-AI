@@ -406,6 +406,11 @@ def test_golden_manifest_outcome_identity_and_request():
     assert manifest.to_details() == _GOLDEN["manifest"]
     assert outcome.to_details() == _GOLDEN["outcome"]
     assert hash_value(request) == _GOLDEN["provider_request_hash"]
+    # The one deliberate request-shape change since the previous pin: parallel
+    # tool use is disabled (CT-INV-3). Without it, the previous pin still holds.
+    assert request["tool_choice"] == {"type": "auto", "disable_parallel_tool_use": True}
+    previous = {k: v for k, v in request.items() if k != "tool_choice"}
+    assert hash_value(previous) == "sha256:82ddc90170ca797a8c629eb4718be04a588233e1404741a8ed4ea7669c3f992e"
 
 
 # ===========================================================================

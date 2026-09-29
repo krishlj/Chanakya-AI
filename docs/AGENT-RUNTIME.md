@@ -1776,11 +1776,21 @@ this is not conversation memory, and nothing is resumable.
   - The SDK client is checked to target it with no custom headers.
   - The CLI refuses to start while `ANTHROPIC_BASE_URL`,
     `ANTHROPIC_CUSTOM_HEADERS` or `ANTHROPIC_PROFILE` is set.
+  - Every request that carries tools also carries
+    `tool_choice = {"type": "auto", "disable_parallel_tool_use": true}`,
+    so the model is asked for at most one `tool_use` block. The API allows
+    parallel tool use by default, and the Runtime rejects such a reply
+    below. `auto` never forces a tool, so a text-only or `report_findings`
+    conclusion stays possible. A request with no tools carries no
+    `tool_choice`. The field is part of the hashed request.
 
   An in-process provider with only `next_turn` is recorded as `undeclared`.
   Its request hash is the hash of the assembled context it was handed.
 - **Outcomes (CT-INV-3).** Classification happens before anything is used:
-  - more than one `tool_use` block → `multiple_tool_use_blocks`;
+  - more than one `tool_use` block → `multiple_tool_use_blocks`. One
+    action per turn is the Runtime's invariant: the whole turn is rejected
+    and no block is used. The provider's `disable_parallel_tool_use`
+    request only makes such a reply unlikely; this check still decides;
   - a stop reason other than `end_turn`/`tool_use`/`stop_sequence` →
     `unsupported_stop_reason`;
   - structural failure → `malformed_turn` / `reserved_channel_misuse`;
@@ -1811,7 +1821,7 @@ this is not conversation memory, and nothing is resumable.
 |---|---|---|
 | CT-INV-1 | Every provider call is preceded by exactly one durable manifest and followed by exactly one durable outcome, or the investigation halts before the output is used. | `test_manifest_is_durable_before_the_provider_is_called`, `test_manifest_write_failure_means_no_provider_call`, `test_outcome_write_failure_means_the_output_is_never_used`, `test_every_provider_call_has_exactly_one_outcome`, `test_provider_failure_is_recorded_then_fails_closed` |
 | CT-INV-2 | Model context contains only data produced within the same investigation and composed by the Runtime. | `test_runtime_composes_context_from_its_own_results`, `test_context_window_is_the_latest_results_in_order`, `test_foreign_investigation_result_is_rejected_and_never_reaches_the_provider`, `test_caller_supplied_results_cannot_select_or_inject_context`, `test_an_assembler_that_adds_data_is_rejected` |
-| CT-INV-3 | Every rejected model output is durably recorded by safe reason code and integrity hash, without persisting unsafe raw content. | `test_rejected_provider_outputs_are_recorded_and_never_used`, `test_reserved_channel_misuse_is_recorded`, `test_malformed_turn_and_malformed_request_are_recorded`, `test_invalid_findings_are_recorded_and_nothing_is_stored`, `test_oversized_output_is_recorded_then_halts`, `test_raw_model_output_is_never_persisted` |
+| CT-INV-3 | Every rejected model output is durably recorded by safe reason code and integrity hash, without persisting unsafe raw content. | `test_rejected_provider_outputs_are_recorded_and_never_used`, `test_reserved_channel_misuse_is_recorded`, `test_malformed_turn_and_malformed_request_are_recorded`, `test_invalid_findings_are_recorded_and_nothing_is_stored`, `test_oversized_output_is_recorded_then_halts`, `test_raw_model_output_is_never_persisted`; multi-tool backstop with parallel tool use disabled: `tests/test_anthropic_single_tool_request.py` |
 | CT-INV-4 | Provider destination and identity are explicit, recorded, and never silently taken from implicit environment variables. | `test_declared_provider_identity_is_recorded`, `test_provider_request_hash_is_the_hash_of_the_exact_request_sent`, `test_prepared_request_is_reverified_before_sending`, `test_cli_refuses_environment_that_could_redirect_the_provider`, `test_environment_base_url_never_changes_the_recorded_or_used_endpoint`, `test_custom_headers_on_a_client_fail_closed`, `test_unsafe_endpoints_are_rejected` |
 | (CT-INV-4, corrected in Phase 18) | Until Phase 18 the environment could still route the transport (proxy), replace TLS trust roots and enable request logging; only the endpoint and headers were explicit (T-63). P18-INV-1..5 close this. | `tests/test_provider_transport_isolation.py` |
 | CT-INV-5 | Turn records carry no authority: policy, approval, dispatch and risk never use them. | `test_turn_records_are_unreachable_from_authorization_execution_and_risk`, `test_evaluation_context_carries_no_turn_data`, `test_turn_data_does_not_change_what_policy_approval_and_dispatch_receive`, `test_turn_records_are_not_fed_back_into_model_context` |

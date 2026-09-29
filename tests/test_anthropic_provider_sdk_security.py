@@ -287,7 +287,8 @@ def test_request_body_exact_shape_with_required_default_config():
     body = transport.last_request_body
     assert request.method == "POST"
     assert request.url.path == "/v1/messages"
-    assert set(body) == {"model", "system", "messages", "max_tokens", "tools"}
+    assert set(body) == {"model", "system", "messages", "max_tokens", "tools", "tool_choice"}
+    assert body["tool_choice"] == {"type": "auto", "disable_parallel_tool_use": True}
     assert body["model"] == "claude-test-model"
     assert body["system"] == "TRUSTED INSTRUCTIONS"
     assert body["max_tokens"] == mapping._DEFAULT_MAX_TOKENS == 4096
@@ -316,7 +317,8 @@ def test_request_body_with_all_optional_config_values():
     provider.next_turn(_assembled_context(capability_catalog=[_catalog_entry()]))
 
     body = transport.last_request_body
-    assert set(body) == {"model", "system", "messages", "max_tokens", "tools", "temperature"}
+    assert set(body) == {"model", "system", "messages", "max_tokens", "tools", "tool_choice", "temperature"}
+    assert body["tool_choice"] == {"type": "auto", "disable_parallel_tool_use": True}
     assert body["max_tokens"] == 321
     assert body["temperature"] == 0.25
     # endpoint is client-construction-only: it never enters the body.
@@ -432,7 +434,8 @@ def test_hostile_untrusted_content_cannot_create_or_overwrite_top_level_fields(h
     )
 
     body = transport.last_request_body
-    assert set(body) == {"model", "system", "messages", "max_tokens", "tools"}
+    assert set(body) == {"model", "system", "messages", "max_tokens", "tools", "tool_choice"}
+    assert body["tool_choice"] == {"type": "auto", "disable_parallel_tool_use": True}
     assert body["model"] == "claude-test-model"
     assert body["system"] == "TRUSTED"
     assert body["max_tokens"] == 4096
