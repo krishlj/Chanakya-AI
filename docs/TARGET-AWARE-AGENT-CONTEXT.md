@@ -1186,6 +1186,9 @@ below, consistent with how `docs/TARGET-MANAGER.md` §15 handled T-28–T-31.
 
 ### Candidate new threats (for a future `THREAT-MODEL.md` revision)
 
+*(v1.0.0: T-32 and T-33 are adopted, with these definitions, into
+`docs/THREAT-MODEL.md` §8, "Consolidated threat register (v1.0.0)".)*
+
 - **T-32 — Authorization confusion via model-visible target context.** A
   descriptive target field (or its wording) is read by the model — or by
   a human reviewing the model's output — as evidence that an action is

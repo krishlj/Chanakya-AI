@@ -1,7 +1,8 @@
 """Filesystem Evidence Store — Phase 5.2.2.
 
 See ``chanakya.evidence.store`` for the implementation and its full
-design rationale. Not wired into the Agent Runtime yet (Phase 5.2.3).
+design rationale. Wired into the Agent Runtime since Phase 5.2.3
+(``chanakya.runtime.evidence.FilesystemEvidenceRecorder``).
 """
 from __future__ import annotations
 

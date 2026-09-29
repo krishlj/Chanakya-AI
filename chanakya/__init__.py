@@ -1,24 +1,23 @@
-"""Chanakya AI — Phase 2 Security Control Plane.
+"""Chanakya AI — policy-gated, read-only, audited security investigation.
 
-Implements, per docs/ARCHITECTURE.md and docs/CAPABILITY-PERMISSION-MODEL.md:
+The model proposes; it never executes. Every proposed action passes, in
+order, through Runtime turn validation (at most one tool call per turn),
+ToolRequest intake, the Policy Gateway (the sole allow/deny/require_approval
+authority), the Security Tool Registry and capability envelope, human
+approval when required, the Tool Layer, tool-output screening, Evidence,
+evidence-grounded Findings, the deterministic Risk Engine and the durable,
+hash-chained Audit Log. ``--review`` verifies a past investigation
+read-only. See ARCHITECTURE.md ("Implementation status at v1.0.0").
 
-- ``chanakya.contracts``  — the ToolRequest / PolicyDecision / Target data
-  contracts from docs/CONTRACTS.md, implemented exactly as specified there.
-- ``chanakya.registry``   — the Security Tool Registry (docs/TOOL-REGISTRY.md).
-- ``chanakya.capability`` — the capability/permission model: action types,
-  permission levels, and the invariants connecting them to classification
-  (docs/CAPABILITY-PERMISSION-MODEL.md).
-- ``chanakya.policy``     — the Policy & Security Gateway
-  (docs/POLICY-GATEWAY.md) — the sole allow/deny/require_approval authority.
-- ``chanakya.targets``    — a minimal, descriptive-only target registry the
-  Gateway needs for scope checks. This is NOT the future Target Manager /
-  Target Adapters from docs/ARCHITECTURE.md §6-7 — see the Phase 2
-  implementation notes for what remains for the Agent Runtime phase.
+Packages: ``cli`` (entry point and composition root), ``runtime``,
+``providers`` (Anthropic), ``contracts``, ``policy``, ``registry``,
+``capability``, ``targets``, ``tools``, ``approval``, ``evidence``,
+``findings``, ``risk``, ``audit``, ``review``.
 
-Deliberately NOT implemented in this phase: the Agent Runtime, the AI Agent,
-the LLM Abstraction, the MCP/Tool Layer, any real security tool, and any
-shell/process execution path. Nothing in this package executes a security
-tool or a shell command against any target.
+v1.0.0 scope: the local host only, two read-only capabilities
+(``observe_local_host_environment``, ``list_listening_ports``). There is no
+shell or arbitrary command execution, no state-changing capability, no
+remote target and no MCP integration.
 """
 
 __version__ = "1.0.0"

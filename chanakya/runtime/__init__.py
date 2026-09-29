@@ -20,11 +20,12 @@ Implements, per docs/AGENT-RUNTIME.md:
   verdict, an accepted, correctly-bound ``ApprovalDecision``.
 - The Agent Loop Controller orchestration skeleton (``AgentLoopController``).
 
-Deliberately NOT implemented in this step: an LLM provider, a real Tool
-Layer/MCP integration, real security tools, Target Manager adapters, a
-real Evidence Store, and an Audit Log. Every one of those boundaries is
-represented here only as an explicit interface (``Protocol``) that a
-later phase implements against.
+Each of the Runtime's collaborators is an explicit interface
+(``Protocol``) implemented elsewhere: the provider (``chanakya.providers``),
+the Tool Layer (``chanakya.tools``), the Target Manager (``chanakya.targets``),
+the Evidence Store (``chanakya.evidence``), the Audit Log
+(``chanakya.audit``), findings and risk. ``chanakya.cli.main.build_runtime``
+wires the production set. There is no MCP integration.
 """
 from .agent_loop import (
     AgentLoopController,

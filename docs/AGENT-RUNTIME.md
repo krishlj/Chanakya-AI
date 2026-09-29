@@ -5,7 +5,8 @@ Runtime** defined in `ARCHITECTURE.md` §3. It builds on, and does not
 redesign, `ARCHITECTURE.md`, `docs/CONTRACTS.md`, `docs/THREAT-MODEL.md`,
 `docs/POLICY-GATEWAY.md`, `docs/TOOL-REGISTRY.md`, and
 `docs/CAPABILITY-PERMISSION-MODEL.md`. No implementation code exists yet
-— this is design only.
+— this is design only. *(v1.0.0: implemented in `chanakya/runtime/`;
+later sections carry per-phase status notes.)*
 
 The Agent Runtime is the **controlled execution and orchestration layer**
 between the AI Agent (reasoning) and the security control plane (Policy
@@ -2275,7 +2276,9 @@ ProviderConfig (trusted)
 - No corporate proxy support: a proxy cannot be configured.
 - The verifier depends on SDK and transport internals (anthropic 1.7.0,
   httpx2 2.13.0). A dependency change that moves them fails closed
-  rather than open. Dependencies are not locked (T-23).
+  rather than open. *(v1.0.0: the release installs from a hashed lock,
+  `requirements.lock`, pinning exactly these versions; the declared
+  ranges still allow others without the lock, T-23.)*
 - The policy records what was verified in this process. It is not an
   attestation that a remote party can check (T-18 applies to the log).
 
@@ -2352,8 +2355,9 @@ stream consistent (T-64). P18-INV-3 was not fully enforced.
 - Another thread that enables DEBUG between the final check and the SDK
   call is not covered. The Runtime is synchronous.
 - A future SDK that logs request content outside these namespaces, or at
-  INFO, would not be caught. The layout is pinned by a test, and
-  dependencies are unlocked (T-23).
+  INFO, would not be caught. The layout is pinned by a test. *(v1.0.0:
+  dependencies are locked with hashes in `requirements.lock`; installs
+  without the lock can still resolve other versions, T-23.)*
 
 **`RuntimeExecutionLimits`** — admin-controlled configuration (trusted,
 versioned, not Agent-writable), analogous to `PolicySet`.

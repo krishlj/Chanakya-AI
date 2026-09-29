@@ -9,7 +9,8 @@ a peer document to `docs/POLICY-GATEWAY.md` and `docs/TOOL-REGISTRY.md` —
 the Policy Gateway consumes target and environment information produced
 here as a trusted-input, read-only dependency, exactly as it already
 consumes the Security Tool Registry. No implementation code exists yet;
-this is design only.
+this is design only. *(v1.0.0: implemented in
+`chanakya/targets/`; later sections carry per-phase status notes.)*
 
 This document follows the Phase 4.1 repository inspection (reviewed and
 approved) and does not redesign anything that inspection found already
@@ -743,6 +744,9 @@ without modifying that document:
 | Indirect prompt injection through environment metadata | T-03/T-12, extended | Same mechanism as malicious target metadata, above |
 | Target ID collisions/confusion | New concern | TM-INV-9; `TargetRegistry.register()`'s existing duplicate-`target_id` rejection (unchanged) |
 | Unauthorized target registration | T-15/T-19 analogue | Registration remains admin-only, unchanged; `AUTHORIZED` status requires either direct admin action or an explicit `VALIDATED → AUTHORIZED` admin decision (§7) — never automatic |
+
+*(v1.0.0: T-28 to T-31 are adopted, with these definitions, into
+`docs/THREAT-MODEL.md` §8, "Consolidated threat register (v1.0.0)".)*
 
 **Candidate new Threat Model entries** (not written into
 `docs/THREAT-MODEL.md` in this step — flagged for a future revision,

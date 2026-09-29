@@ -52,9 +52,10 @@ def _best_effort_request_id(raw_request: Any) -> str:
 
 @dataclass(frozen=True)
 class EvaluationContext:
-    """Everything the Gateway needs beyond the raw request itself, standing
-    in for the not-yet-implemented Agent Runtime's ``InvestigationContext``
-    (docs/CONTRACTS.md §2) and Target Manager (docs/ARCHITECTURE.md §6).
+    """Everything the Gateway needs beyond the raw request itself. The
+    Agent Loop Controller builds it for each request from the
+    investigation's ``InvestigationContext`` (docs/CONTRACTS.md §2) and the
+    Resource Governor's per-capability call counts.
 
     ``authorized_target_refs`` mirrors ``InvestigationContext.target_refs``.
     ``call_counts`` is a simple per-capability counter standing in for the
@@ -117,9 +118,9 @@ class PolicyGateway:
                 f"capability '{request.capability}' is not a known, enabled capability",
             )
 
-        # Least-privilege environment check (SR-21) — a structural stand-in,
-        # in this phase, for what the future Tool Layer's execution
-        # environment must also enforce physically once real tools exist.
+        # Least-privilege environment check (SR-21). A structural check: the
+        # Tool Layer runs every handler in this process, at the privilege
+        # of the account running Chanakya.
         if (
             entry.required_privileges.os_privilege == OSPrivilege.ELEVATED
             and self._max_available_privilege == OSPrivilege.STANDARD_USER

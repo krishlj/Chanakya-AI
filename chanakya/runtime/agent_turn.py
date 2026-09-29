@@ -1,11 +1,10 @@
 """AgentTurnOutput — docs/AGENT-RUNTIME.md "Additional contracts".
 
-The schema-validated envelope for one Agent turn's output. Produced (in a
-real system) by the LLM Abstraction from the raw model call — not
-implemented in this step, per the Phase 3 Step 3.4 boundary "Do NOT
-implement an LLM provider" — and consumed only by the Agent Loop
-Controller. Never seen by the Policy Gateway, Security Tool Registry, or
-a future Tool Layer.
+The schema-validated envelope for one Agent turn's output. Produced by
+the provider mapping (``chanakya.providers.mapping``) from the raw model
+reply, and consumed only by the Agent Loop Controller, after the Runtime has
+checked the reply carries at most one ``tool_use`` block (CT-INV-3). Never
+seen by the Policy Gateway, Security Tool Registry, or the Tool Layer.
 
 Like ``ToolRequest.from_dict`` (docs/CONTRACTS.md §3), ``from_dict`` here
 is the one place a raw, untrusted dict becomes a typed object — and

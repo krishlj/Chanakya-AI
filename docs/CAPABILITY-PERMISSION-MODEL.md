@@ -5,7 +5,8 @@ that answers, for every registered tool: **"what is this tool allowed to
 do?"** It is the synthesis layer between `docs/TOOL-REGISTRY.md` (what a
 capability *is*) and `docs/POLICY-GATEWAY.md` (how a request *is
 enforced*), and builds on, without redesigning, `ARCHITECTURE.md` and
-`docs/CONTRACTS.md`. No implementation code exists yet.
+`docs/CONTRACTS.md`. No implementation code exists yet. *(v1.0.0: implemented in
+`chanakya/capability/`; later sections carry per-phase status notes.)*
 
 This model makes two small, purely additive extensions to the two
 sibling Phase 2 documents already written this session (not to any

@@ -6,7 +6,8 @@ not redesign, `ARCHITECTURE.md`, `docs/CONTRACTS.md`, and
 `docs/THREAT-MODEL.md`, and is a peer document to
 `docs/POLICY-GATEWAY.md` (the Gateway consumes this Registry as a
 trusted, read-only dependency — see `POLICY-GATEWAY.md` §3). No
-implementation code exists yet; this is design only.
+implementation code exists yet; this is design only. *(v1.0.0: implemented in
+`chanakya/registry/`; later sections carry per-phase status notes.)*
 
 ## Design principle (non-negotiable)
 

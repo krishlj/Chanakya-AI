@@ -6,6 +6,9 @@ architecture components described in `ARCHITECTURE.md`. These are
 agreed, they become the basis for the data models implemented in a later
 phase.
 
+*(v1.0.0: implemented in `chanakya/contracts/`; later sections carry
+per-phase status notes.)*
+
 ## Conventions used by every contract
 
 - **`contract_version`** (string, semver, e.g. `"1.0.0"`) is a required

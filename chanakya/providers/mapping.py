@@ -392,6 +392,9 @@ def _response_to_turn(response: Any, *, investigation_id: str, findings_channel:
 
     tool_use_blocks = [block for block in content if _block_type(block) == "tool_use"]
     reserved_blocks = [b for b in tool_use_blocks if is_reserved_capability_name(getattr(b, "name", None))]
+    # Not "first tool wins": a turn with more than one tool_use block is
+    # rejected as a whole by the Runtime (CT-INV-3, agent_loop._classify_turn)
+    # before this mapping is used, so here there is at most one.
     tool_use_block = tool_use_blocks[0] if tool_use_blocks else None
     text_parts = [block.text for block in content if _block_type(block) == "text" and getattr(block, "text", None)]
     explanation: Optional[str] = "\n".join(text_parts) if text_parts else None

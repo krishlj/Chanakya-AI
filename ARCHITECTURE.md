@@ -1,10 +1,12 @@
-# Chanakya AI — Architecture Specification (Phase 0)
+# Chanakya AI — Architecture Specification
 
-This document is the Phase 0 architecture specification for Chanakya AI.
+This document is the architecture specification for Chanakya AI, written in
+Phase 0 and maintained through v1.0.0 (see "Implementation status at
+v1.0.0" below).
 It defines every layer of the system, the objects that flow between them,
 the trust and security boundaries that make safety structural rather than
 prompted, and the terminology used consistently across the project. It
-contains no implementation code — only design.
+contains no implementation code — only design and status notes.
 
 Chanakya AI is an AI-assisted security agent for authorized security
 research, investigation, and defensive/controlled testing. Phase 1 targets
@@ -27,6 +29,65 @@ remote infrastructure without structural rework.
   phase. Local storage is not by itself confidential: from Phase 20 the
   durable workdir is always self-excluding from Git (see §10), but it is
   not encrypted at rest or permission-hardened by Chanakya.
+
+---
+
+## Implementation status at v1.0.0
+
+This document began as the Phase 0 design and is kept as the architecture of
+record. Each section's **Status** notes record what was built. At v1.0.0 the
+implemented system is:
+
+```
+User -> CLI (chanakya / python -m chanakya.cli) -> InvestigationManager
+  -> AgentLoopController (Agent Runtime) -> AnthropicProvider (LLM Abstraction)
+  -> turn classification (one tool call per turn, CT-INV-3) -> ToolRequestIntake
+  -> PolicyGateway <- SecurityToolRegistry -> CapabilityEnvelope
+  -> TerminalApprovalProvider (when the verdict is require_approval)
+  -> dispatch() -> ToolExecutor -> read-only local-host handler
+  -> envelope checks -> tool-output screening -> EvidenceStore
+  -> Findings (report_findings channel) -> RiskEngine -> FilesystemAuditLog
+  -> Review (--review, read-only)
+```
+
+Where the implementation differs from, or does not yet cover, the design
+below:
+
+- **Scope.** Local host only, CLI only, two read-only capabilities
+  (`observe_local_host_environment`, `list_listening_ports`). No
+  state-changing capability, remote target, MCP server, Web GUI,
+  Recommendation, or investigation resume exists.
+- **Tool Layer (section 8).** In-process handlers behind `chanakya.tools`;
+  there is no MCP transport. The "MCP" wording below describes the design,
+  not v1.0.0.
+- **LLM Abstraction (section 4).** `chanakya.providers` (Anthropic only).
+  The provider asks for at most one tool call per turn
+  (`disable_parallel_tool_use`), and the Runtime independently rejects any
+  reply with more than one `tool_use` block (CT-INV-3). Multiple or
+  parallel tool execution is **not** supported.
+- **AI Agent / AI Analysis Layer (sections 2, 12).** Not separate
+  components: the model's turn is validated by the Runtime, and findings
+  arrive only through the reserved `report_findings` channel and must cite
+  this investigation's Evidence.
+- **Configuration (section 15).** Policy rules, the Registry, execution
+  limits and the risk rule set are defined in code
+  (`chanakya.cli.main.build_runtime`, `chanakya.registry.bootstrap`,
+  `chanakya.contracts.risk_taxonomy`), not in configuration files. The only
+  external inputs are CLI arguments and the `ANTHROPIC_API_KEY` environment
+  variable.
+- **Approval (sections 1, 13).** `approve`/`deny` only; no justification or
+  comment is collected. `decided_by` is the OS user or `--approver`
+  (free-form, not an authenticated identity; T-17).
+- **Error handling (section 16).** A rejected model turn is recorded and
+  consumes a step. It is not retried with corrective context, and rejection
+  details are never fed back to the model.
+- **Timeouts.** Checked after the handler returns (post-hoc), not
+  preemptively (T-36).
+- **Durable data (section 10).** Stored under `--workdir`; self-excluding
+  from Git (T-65); not encrypted at rest.
+
+The consolidated threat register with final statuses is in
+`docs/THREAT-MODEL.md` section 8, "Consolidated threat register (v1.0.0)".
 
 ---
 
@@ -543,6 +604,8 @@ investigation review (Phase 12)".
 - **Configuration** (policy rules, tool registry definitions, target
   definitions, model settings) lives in versionable config files, treated
   as a trusted input (administrator-controlled, not agent-writable).
+  *(v1.0.0: these are defined in code, not configuration files; see
+  "Implementation status at v1.0.0".)*
 - **Secrets** (API keys, target credentials) are never included in LLM
   context, never written to Evidence or Audit records in plaintext, and
   are held only by the Runtime/Target Adapter/Tool Layer components that
@@ -657,6 +720,12 @@ restructuring existing layers:
 
 ## High-level architecture diagram
 
+*Design-level diagram (Phase 0). At v1.0.0 the Tool Layer is in-process
+(no MCP), configuration is code-defined, and the AI Agent/Analysis roles are
+the provider plus Runtime turn validation; see "Implementation status at
+v1.0.0" for the implemented flow. The state-changing example in §19
+describes the design: no state-changing capability exists at v1.0.0.*
+
 ```mermaid
 flowchart TD
     User([User])
@@ -726,32 +795,41 @@ flowchart TD
 
 ---
 
-## Proposed module skeleton
+## Package map (v1.0.0)
 
-Names and responsibilities only — no files created beyond this document.
+The Phase 0 skeleton proposed `agent/`, `llm/` and `config/` packages. They
+were not created: the Agent role is the provider plus Runtime turn
+validation, the LLM Abstraction is `providers/`, and configuration is
+code-defined. The implemented packages are:
 
 ```
 chanakya/
-  agent/          # AI Agent — planning, reasoning, ToolRequest proposals, analysis
-  llm/            # LLM Abstraction — provider-agnostic model interface
-  runtime/        # Agent Runtime — loop, state, dispatch, timeouts, error handling
-  policy/         # Policy & Security Gateway — rules, allow/deny/approval classification
-  targets/        # Target Manager
-  targets/adapters/ # Target Adapters (local_host now; others later)
-  tools/          # MCP/Tool Layer
-  registry/       # Security Tool Registry
-  evidence/       # Evidence Store — append-only, tamper-evident
-  risk/           # Risk Engine
-  approval/       # Human Approval Mechanism (CLI-rendered for Phase 1)
-  audit/          # Audit Logging
-  config/         # Configuration and secrets management
-  cli/            # CLI entrypoint (User Interface Layer)
+  cli/              # User Interface Layer and composition root (build_runtime); `chanakya` command
+  runtime/          # Agent Runtime: agent loop, turn classification, intake, context assembly,
+                    #   dispatch, limits, timeouts, retries, audit emission, workdir placement
+  providers/        # LLM Abstraction: AnthropicProvider, request/response mapping, verified transport
+  contracts/        # Data contracts (docs/CONTRACTS.md), turn records, screening, failure vocabulary
+  policy/           # Policy & Security Gateway (sole allow/deny/require_approval authority)
+  registry/         # Security Tool Registry and the production capability entries
+  capability/       # Capability/permission model, execution envelope, schema validation
+  targets/          # Target Manager, target registry, target/environment views
+  targets/adapters/ # Target Adapters (LocalHostAdapter only)
+  tools/            # Tool Layer: ToolExecutor and the two read-only handlers
+  approval/         # Human Approval Mechanism (terminal)
+  evidence/         # Evidence Store: append-only, hash-verified
+  findings/         # Finding store (evidence-grounded model opinions)
+  risk/             # Deterministic, versioned Risk Engine and its store
+  audit/            # Durable, hash-chained Audit Log
+  review/           # Read-only investigation review and verification
 ```
 
-## Phase 1 implementation scope (not started yet)
+## Phase 1 implementation scope (delivered)
 
-Local host only, CLI only, a small set of clearly read-only capabilities
-(exact list to be decided when the Tool Layer/Registry is designed),
-filesystem evidence store, and a synchronous CLI approval prompt
-supporting accept/deny with an optional justification. No state-changing
-tools, no multi-target support, no Web GUI in this phase.
+Planned as: local host only, CLI only, a small set of clearly read-only
+capabilities, filesystem evidence store, and a synchronous CLI approval
+prompt. No state-changing tools, no multi-target support, no Web GUI.
+
+Delivered across Phases 2–20 and released as v1.0.0 with that scope. The
+read-only capabilities are `observe_local_host_environment` and
+`list_listening_ports`. The approval prompt accepts `approve`/`deny`; the
+planned optional justification was not implemented.

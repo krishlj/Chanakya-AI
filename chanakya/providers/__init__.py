@@ -6,10 +6,11 @@ Phase 5.6.1 added the configuration boundary (`ProviderConfig`). Phase
 Anthropic SDK — see `anthropic_provider.py`'s module docstring for the
 full security-invariant accounting.
 
-Deliberately NOT implemented yet: any composition/bootstrap module
-(`bootstrap.py`) that resolves `ProviderConfig.api_key_env_var` into a
-raw credential, a multi-provider registry, streaming, or retries. Each
-of those is a later, separately-approved step.
+The API key is resolved only by the CLI composition root
+(`chanakya.cli.main.main`). Not implemented: a multi-provider registry,
+streaming, and SDK retries (`max_retries` is always 0). Each request asks for
+at most one tool call per turn (`mapping._TOOL_CHOICE`); the Runtime still
+rejects a reply with more than one `tool_use` block (CT-INV-3).
 """
 from .anthropic_provider import AnthropicProvider
 from .config import MAX_TEMPERATURE, MIN_TEMPERATURE, ProviderConfig

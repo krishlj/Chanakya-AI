@@ -6,7 +6,8 @@ does not redesign, `ARCHITECTURE.md`, `docs/CONTRACTS.md`, or
 `docs/THREAT-MODEL.md`. It uses the `ToolRequest` and `PolicyDecision`
 contracts exactly as defined in `docs/CONTRACTS.md` §3 and §5 — no
 contract fields are added, removed, or changed here. No implementation
-code exists yet; this is design only.
+code exists yet; this is design only. *(v1.0.0: implemented in
+`chanakya/policy/`; later sections carry per-phase status notes.)*
 
 ## Design principle (non-negotiable)
 

@@ -2,7 +2,7 @@
 
 The Agent Runtime is the sole producer of ``AuditEvent``s
 (docs/ARCHITECTURE.md §14, docs/POLICY-GATEWAY.md §12) — the Policy
-Gateway, the Approval mechanism, and a future Tool Layer never write to
+Gateway, the Approval mechanism, and the Tool Layer never write to
 the Audit Log directly; they only hand the Runtime what it needs. This
 module is that emission point.
 

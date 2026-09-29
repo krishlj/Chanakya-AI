@@ -8,7 +8,10 @@ those boundaries) and does not change either document; no contradiction
 requiring an edit was found during this analysis (see "Architecture
 changes recommended" at the end for non-blocking suggestions).
 
-No implementation code exists yet. This is design analysis only.
+No implementation code existed when this model was written (Phase 0).
+It has been updated in every phase since; the implemented system and the
+final status of every threat at v1.0.0 are in §8, "Consolidated threat
+register (v1.0.0)".
 
 ## Methodology
 
@@ -1569,7 +1572,8 @@ boundary. **Turn records are forensic records and carry no authority.**
       Review (P18-INV-1..6).
   - *Residual:* no certificate pinning (the OS trust store is trusted);
     verification depends on SDK/transport internals and fails closed if
-    they change; dependencies are unlocked (T-23).
+    they change; dependencies are unlocked (T-23). *(v1.0.0: locked with
+    hashes in `requirements.lock`; see the consolidated register.)*
 - **T-59 (corrected in Phase 18).** The Phase 14 "MITIGATED" status covered
   the endpoint URL and SDK headers only; the transport stayed
   environment-controlled until Phase 18 (T-63). With T-63 mitigated, T-59
@@ -1604,7 +1608,8 @@ boundary. **Turn records are forensic records and carry no authority.**
   - *Residual:* in-process only. Not covered: monkeypatched logging, custom
     logger classes, another thread racing the final check, OS-level
     capture, and a future SDK that logs content elsewhere or at INFO
-    (layout pinned by test; dependencies unlocked, T-23).
+    (layout pinned by test; dependencies unlocked, T-23; *v1.0.0: locked
+    with hashes*).
 - **T-63 (Phase 19 status).** Its logging aspect is MITIGATED from Phase 19
   (namespace-wide control). Route, TLS trust and environment
   authentication were mitigated in Phase 18.
@@ -1660,6 +1665,101 @@ boundary. **Turn records are forensic records and carry no authority.**
 - **T-22 (Phase 20 addition).** The version-control egress path for
   durable data is MITIGATED (T-65). Status unchanged: PARTIALLY MITIGATED
   (local readers, provider egress by design).
+
+### Consolidated threat register (v1.0.0)
+
+This is the single register for every threat ID used in the project. IDs are
+unchanged. No ID is used with two meanings across `ARCHITECTURE.md`,
+`docs/*.md` or the release reports. T-28 to T-31 were defined in
+`docs/TARGET-MANAGER.md` §15 and T-32/T-33 in
+`docs/TARGET-AWARE-AGENT-CONTEXT.md` (threat section); they are adopted here
+with those definitions. Every "candidate" threat above (T-34 to T-65) is
+adopted into the register. Statuses are those of the final security audit
+(2026-09-29), updated only for release-preparation work completed since
+(dependency lock, vulnerability scan, operator disclosure).
+
+Statuses:
+
+- **MITIGATED**: the threat is addressed by enforced controls for the v1.0.0
+  scope (tests exist for the controls).
+- **PARTIALLY MITIGATED**: enforced controls reduce it; a stated residual
+  remains.
+- **RESIDUAL ACCEPTED**: a documented, accepted property of the design or
+  scope (for example, a local single-operator CLI).
+- **FUTURE**: cannot arise with v1.0.0 capabilities; the listed controls are
+  a gate for the future feature that would introduce it.
+
+| ID | Threat | Status (v1.0.0) | Basis / residual | Future hardening |
+|---|---|---|---|---|
+| T-01 | Harmful user objective | MITIGATED | Gateway decides independently of wording; read-only capability set | — |
+| T-02 | Direct prompt injection | RESIDUAL ACCEPTED | A hijacked model can only propose; step and call budgets bound it | — |
+| T-03 | Indirect prompt injection through tool/target output | PARTIALLY MITIGATED | Data channel only; fixed failure codes; turn records. Steering within valid output remains | — |
+| T-04 | Malicious MCP tool definitions | FUTURE | No MCP; the Registry is code-defined and admin-reviewed | SR-23 before any MCP integration |
+| T-05 | Malicious MCP server runtime behavior | FUTURE | No MCP; envelope size/schema/time checks already apply to handlers | SR-23; per-server failure flagging |
+| T-06 | LLM hallucination | RESIDUAL ACCEPTED | Findings must cite this investigation's Evidence; misinterpretation of real evidence remains | — |
+| T-07 | Overconfident conclusions | PARTIALLY MITIGATED | Agent and rule-based confidence shown separately; CLI disclaimers | — |
+| T-08 | Step chaining / excessive autonomy | PARTIALLY MITIGATED | 10 steps and 10 tool calls per investigation; read-only only. No cumulative policy rules | Cumulative policy rules |
+| T-09 | Tool parameter manipulation | MITIGATED | Both capabilities take `{}` with `additionalProperties: false` | Per-capability scope checks for any parameterized capability |
+| T-10 | Tool privilege escalation | MITIGATED | Standard-user, read-only handlers; `ELEVATED` denied (SR-21) | OS-level enforcement for any higher-privilege capability |
+| T-11 | Arbitrary command execution | MITIGATED | No shell, subprocess, `eval` or `exec` in `chanakya/`; closed parameter schemas (SR-4) | Permanent rule |
+| T-12 | Hostile target attacks the agent | PARTIALLY MITIGATED | As T-03; the target is the operator's own host | — |
+| T-13 | Untrusted file parsing | FUTURE | No file-reading capability; kernel-table parsers are strict | Hardened parsers and limits for any file capability |
+| T-14 | Compromised tool output | PARTIALLY MITIGATED | Stdlib/OS APIs only; output schema-checked for shape, not truth | — |
+| T-15 | Policy bypass | MITIGATED | `dispatch()` requires a matching `PolicyDecision`; tests; Review flags dispatch without a decision | — |
+| T-16 | Human approval bypass | MITIGATED | Approval bound to request, decision, approval request and investigation | — |
+| T-17 | Approval spoofing | RESIDUAL ACCEPTED | One-time binding is enforced. `decided_by` is the OS user or free-form `--approver`, and answers are read from stdin, so whoever controls the session can answer (documented in README) | Authenticated approver identity; SR-24 for any remote approval channel |
+| T-18 | Audit-log or evidence tampering | PARTIALLY MITIGATED | Hash chains, re-verification on read, risk recomputation, version-downgrade checks. A consistent full rewrite by a local attacker is not detected | External anchoring or keyed chain |
+| T-19 | Fail-open on indeterminate policy | MITIGATED | Any Gateway exception becomes `deny`; Runtime backstops | — |
+| T-20 | Credential exposure | PARTIALLY MITIGATED | One screening predicate on every sink; pattern-based | Broader secret classification |
+| T-21 | API key exposure (LLM provider) | MITIGATED | Read once, never logged or printed; header only; isolated transport; secret scans clean. Held in process memory | — |
+| T-22 | Sensitive evidence leakage | PARTIALLY MITIGATED | Git egress mitigated (T-65); host telemetry reaches the provider by design and is disclosed to operators (README); not encrypted at rest | Encryption/permissions at rest; per-capability `evidence_only` egress where appropriate |
+| T-23 | Supply-chain compromise | PARTIALLY MITIGATED | All direct dependencies declared; exact versions locked with sha256 hashes (`requirements.lock`); an install without the lock can resolve other versions within the declared ranges | Automated dependency review in CI |
+| T-24 | Dependency vulnerabilities | PARTIALLY MITIGATED | pip-audit (PyPI and OSV) on the locked set at release: no known vulnerabilities (2026-09-29). Needs ongoing re-scanning | Scheduled scanning |
+| T-25 | Compromised local environment | RESIDUAL ACCEPTED | Out of scope by design | — |
+| T-26 | Remote target risks | FUTURE | No remote adapter | SR-24 before any remote adapter |
+| T-27 | Resource exhaustion | MITIGATED | Step, call, duration, output and provider-output limits; residual is T-36 | — |
+| T-28 | Target impersonation/substitution | MITIGATED | `local_host` only; the Gateway re-resolves `target_ref` by id and status | Identity verification for remote targets |
+| T-29 | Locator-based scope confusion | FUTURE | Locators are neither exposed nor used | Locator validation for any non-local adapter |
+| T-30 | Stale/unrevoked target information | MITIGATED | The Gateway re-reads target status on every evaluation | — |
+| T-31 | Adapter compromise / SSRF-like redirection | FUTURE | Local adapter only, no network | Egress controls for any network adapter |
+| T-32 | Authorization confusion via model-visible target context | MITIGATED | The Gateway is the sole authority; target context carries no authorization fields | — |
+| T-33 | Cross-investigation (target) context leakage | MITIGATED | Runtime-owned, investigation-scoped context sources | Re-review if context is persisted or resumed |
+| T-34 | Host-data over-collection sent to the provider | RESIDUAL ACCEPTED | Minimal field sets; disclosed to operators (README) | — |
+| T-35 | Capability output as an injection carrier | PARTIALLY MITIGATED | As T-03 | — |
+| T-36 | Hanging capability (non-preemptive timeout) | RESIDUAL ACCEPTED | Both handlers are bounded with no blocking I/O; a late result is discarded | Preemptive timeout / process isolation |
+| T-37 | Platform-parsing divergence | MITIGATED | Strict parsers; a malformed row fails the whole call | — |
+| T-38 | Registry/handler drift | MITIGATED | Parity test; executor refuses unknown handlers | — |
+| T-39 | Fabricated or unsupported finding | MITIGATED | Citations resolved through this investigation's own history | — |
+| T-40 | Finding text as injection/display carrier | MITIGATED | Control characters rejected; escaped output; findings never fed back | — |
+| T-41 | Secrets copied into findings | PARTIALLY MITIGATED | Pattern screen rejects; unstructured secrets pass | Broader secret classification |
+| T-42 | Finding-store tampering | PARTIALLY MITIGATED | As T-18 | As T-18 |
+| T-43 | Finding treated as authority | MITIGATED | No reader in policy, approval or dispatch | — |
+| T-44 | Finding flood | MITIGATED | At most 20 per investigation; bounded fields | — |
+| T-45 | Severity steering through category choice | RESIDUAL ACCEPTED | Closed taxonomy, evidence compatibility, read-only ceiling `high`; the highest compatible category can still be chosen | — |
+| T-46 | Risk rating treated as authority | MITIGATED | Static import rules; never fed back | — |
+| T-47 | Fabricated/foreign/duplicate risk references | MITIGATED | Batch validation; deterministic ids | — |
+| T-48 | Risk-store tampering | PARTIALLY MITIGATED | Recomputation on review; a consistent full rewrite remains (T-18) | As T-18 |
+| T-49 | Rule-set drift | MITIGATED | Versioned, golden-frozen rule set | — |
+| T-50 | False assurance from low or absent ratings | PARTIALLY MITIGATED | Explicit "not assessed" and disclaimers; human judgment | — |
+| T-51 | Partial state after a risk failure | MITIGATED | Halt plus Review reporting | — |
+| T-52 | Declared-but-unenforced output contract | MITIGATED | Envelope enforcement; string contents bounded only by the byte limit | — |
+| T-53 | Registry timeout drift | MITIGATED | Effective timeout is min(declared, ceiling); residual T-36 | — |
+| T-54 | Unreconstructable authorization history | MITIGATED | Authorization record plus Review | — |
+| T-55 | Silent incomplete investigation | MITIGATED | Review reports `INCOMPLETE` | Resume |
+| T-56 | Rule-set version confusion/downgrade | MITIGATED | No fallback; recomputation under the recorded set | — |
+| T-57 | Unrecorded model influence | MITIGATED | Durable turn records | — |
+| T-58 | Caller-composed model context | MITIGATED | Runtime-owned context | — |
+| T-59 | Environment-controlled provider destination | MITIGATED | Explicit endpoint; redirecting variables refused | — |
+| T-60 | Unscreened successful tool output | MITIGATED | Screen before Evidence or context (pattern-based, T-20) | — |
+| T-61 | Unscreened failure-path text | MITIGATED | Closed failure vocabulary | — |
+| T-62 | Free-form exception text in Runtime records | MITIGATED | Runtime-owned records. Policy Gateway deny reasons remain free-form audit text (credential-screened, never sent to the model) | Closed Gateway reason vocabulary |
+| T-63 | Environment-controlled provider transport | MITIGATED | Verified transport; relies on SDK internals and fails closed if they change | — |
+| T-64 | Request body via the SDK logger hierarchy | MITIGATED | Namespace-wide check (in-process) | — |
+| T-65 | Durable data in a Git working tree | MITIGATED | Workdir placement confinement | — |
+
+Totals (65): MITIGATED 37, PARTIALLY MITIGATED 15, RESIDUAL ACCEPTED 7,
+FUTURE 6 (T-04, T-05, T-13, T-26, T-29, T-31). The "candidate" headings above
+are kept as the historical record of when each threat was identified.
 
 ---
 
@@ -1754,7 +1854,7 @@ Numbered for later traceability to implementation controls and tests.
 | SR-19 | A `Recommendation` cannot carry an executable `target_ref`/`parameters` shape and cannot be dispatched without producing a new, independently evaluated `ToolRequest`. | T-08 |
 | SR-20 | Per-step and per-investigation timeouts, and a step/iteration budget, are enforced by the Agent Runtime. | T-08, T-27 |
 | SR-21 | Chanakya runs under a dedicated, non-administrative OS account. | T-10, T-23, T-25 |
-| SR-22 | Dependencies are pinned/locked and scanned for known vulnerabilities before release. | T-23, T-24 |
+| SR-22 | Dependencies are pinned/locked and scanned for known vulnerabilities before release. *(v1.0.0: met; hashed `requirements.lock`, pip-audit on the locked set.)* | T-23, T-24 |
 | SR-23 | New or updated MCP server tool definitions require explicit admin review before their classification is trusted in the Security Tool Registry. | T-04, T-05 |
 | SR-24 | Any future remote Target Adapter or remote Approval channel must define and pass its own authentication/transport security review before being added to the supported set. | T-17, T-26 |
 

@@ -23,12 +23,11 @@ was verifying). See docs/AGENT-RUNTIME.md's "Additional contracts"
 section for ``DispatchInstruction``'s field list, now including
 ``investigation_id``.
 
-There is no default ``ToolExecutor`` implementation in this module, and
-none is provided anywhere in this phase: a real Tool Layer does not
-exist yet (Phase 4+), and this module must never fabricate a successful
-``ToolResult`` on its own (Phase 3 Step 3.4 boundary: "Do not fake
-successful security-tool execution"). Callers — including every test in
-this codebase — must supply an explicit ``ToolExecutor``.
+There is no default ``ToolExecutor`` in this module, and it never
+fabricates a successful ``ToolResult`` on its own. Callers must supply an
+explicit ``ToolExecutor``: in production, ``chanakya.tools.executor``
+(built by ``chanakya.tools.bootstrap.build_tool_executor``); tests supply
+their own.
 
 Phase 11: ``DispatchInstruction.capability_envelope`` carries the
 ``CapabilityEnvelope`` the Gateway attached to the ``PolicyDecision``.
@@ -89,8 +88,8 @@ def _check_envelope_binding(instruction: DispatchInstruction, policy_decision: P
 
 
 class ToolExecutor(Protocol):
-    """The interface a future Tool Layer implements against. Not
-    implemented in this phase — see module docstring."""
+    """The interface the Tool Layer implements (production:
+    ``chanakya.tools.executor``). See the module docstring."""
 
     def execute(self, instruction: DispatchInstruction) -> ToolResult:
         ...
