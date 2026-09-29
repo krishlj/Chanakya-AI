@@ -1,0 +1,2 @@
+# Ship the hashed release locks with the source distribution.
+include requirements.lock requirements-test.lock

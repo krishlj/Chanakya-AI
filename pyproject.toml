@@ -1,17 +1,65 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "chanakya"
-version = "0.2.0"
+dynamic = ["version"]
 description = "Chanakya AI — AI-assisted security agent: policy-gated, read-only, audited investigation runtime"
-requires-python = ">=3.9"
-dependencies = [
-    # Phase 5.6.2 — official Anthropic Python SDK. A direct runtime
-    # dependency: chanakya/providers/anthropic_provider.py (a later,
-    # not-yet-implemented Phase 5.6 step) will import it directly. Bounded
-    # to the current major version (1.x, current stable at pin time:
-    # 1.7.0) to prevent an unreviewed breaking major-version upgrade from
-    # being silently pulled in.
-    "anthropic>=1.7.0,<2.0",
+readme = "README.md"
+# The dependency stack (anthropic, httpx2, httpcore2, truststore) requires
+# Python 3.10 or later. Tested on 3.10, 3.11, 3.12 and 3.13.
+requires-python = ">=3.10"
+authors = [{ name = "krishlj" }]
+keywords = ["security", "investigation", "agent", "audit", "policy"]
+classifiers = [
+    "Environment :: Console",
+    "Intended Audience :: Information Technology",
+    "Intended Audience :: System Administrators",
+    "Topic :: Security",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
 ]
+# Every third-party module imported by chanakya/ is declared here directly;
+# nothing relies on a transitive dependency. Ranges bound the compatible major
+# versions. The release is installed from the hashed lock (requirements.lock),
+# which pins the exact, tested set.
+dependencies = [
+    # Provider SDK (chanakya/providers/anthropic_provider.py, transport.py).
+    "anthropic>=1.7.0,<2",
+    # Provider HTTP transport, built and verified explicitly
+    # (chanakya/providers/transport.py).
+    "httpx2>=2.13.0,<3",
+    # System trust store used for provider TLS verification
+    # (chanakya/providers/transport.py).
+    "truststore>=0.10.4,<1",
+]
+
+[project.optional-dependencies]
+# Test suite only; never needed at run time. pydantic is imported directly by
+# tests/test_anthropic_provider_sdk_security.py; tomli reads pyproject.toml in
+# tests/test_release_packaging.py where the standard tomllib is absent (3.10).
+test = [
+    "pytest>=9.1.1",
+    "pydantic>=2.13.5,<3",
+    "tomli>=2.4.1; python_version < '3.11'",
+]
+
+[project.scripts]
+chanakya = "chanakya.cli.main:main"
+
+[project.urls]
+Repository = "https://github.com/krishlj/Chanakya-AI"
+
+[tool.setuptools.dynamic]
+version = { attr = "chanakya.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["chanakya*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
