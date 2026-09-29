@@ -2,3 +2,7 @@ __pycache__/
 *.pyc
 .pytest_cache/
 *.egg-info/
+
+# Phase 20 (T-65) defense in depth: the default durable workdir. The
+# authoritative control is the Runtime-owned .gitignore inside the workdir.
+.chanakya/

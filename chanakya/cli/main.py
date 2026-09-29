@@ -40,6 +40,14 @@ passes no tool results), the provider endpoint is explicit (the CLI refuses
 to start while an SDK redirect variable is set), and ``--review`` shows each
 model turn's forensic record, including a screened explanation.
 
+Phase 20 (T-65): ``build_runtime`` first runs the Runtime-owned placement
+control (``chanakya.runtime.workdir_placement``): the workdir is resolved
+to its canonical path, its Git working-tree boundary is determined, and the
+canonical self-exclusion ``.gitignore`` is established (exclusively,
+atomically) or verified (exactly) before any durable store is constructed.
+A refusal is reported by fixed code only (never a path). ``--review`` does
+not run it and still creates nothing.
+
 Known gaps (deferred): the Agent's explanation text is not shown live
 (``TurnResult`` does not carry it); live investigation state is in memory
 only (Evidence, Findings, RiskAssessments and the Audit Log are durable, and
@@ -88,6 +96,7 @@ from chanakya.runtime.evidence import FilesystemEvidenceRecorder
 from chanakya.runtime.investigation_manager import InvestigationManager
 from chanakya.runtime.limits import RuntimeExecutionLimits
 from chanakya.runtime.resource_governor import ResourceGovernor
+from chanakya.runtime.workdir_placement import DurableWorkdir, WorkdirPlacementError, establish_durable_workdir
 from chanakya.targets.manager import TargetManager
 from chanakya.targets.registry import TargetRegistry
 from chanakya.tools.bootstrap import build_tool_executor
@@ -133,6 +142,7 @@ class CliRuntime:
     approval_provider: TerminalApprovalProvider
     target_id: str
     approver: str
+    workdir: DurableWorkdir
 
 
 def _local_host_target(now: str) -> Target:
@@ -190,8 +200,13 @@ def build_runtime(
 ) -> CliRuntime:
     """Constructs the production Runtime. Evidence and the Audit Log live
     under ``workdir``. One ``AuditEmitter`` (backed by the durable log) is
-    shared by the InvestigationManager and the AgentLoopController."""
-    workdir = Path(workdir)
+    shared by the InvestigationManager and the AgentLoopController.
+
+    Phase 20 (P20-INV-2): placement runs first. No store is constructed,
+    and nothing is written, unless the workdir's canonical exclusion is
+    established and verified; otherwise ``WorkdirPlacementError`` (a fixed
+    code) propagates. Every store is rooted in the verified root only."""
+    placement = establish_durable_workdir(workdir)
     now = utcnow_iso()
 
     registry = SecurityToolRegistry(production_registry_entries(now=now))
@@ -200,14 +215,14 @@ def build_runtime(
     gateway = PolicyGateway(registry, target_registry, _policy_set(require_approval, now))
     executor = build_tool_executor(target_registry, capability_registry=registry)
 
-    evidence_store = EvidenceStore(workdir / "evidence")
-    finding_store = FindingStore(workdir / "findings")
-    risk_store = RiskAssessmentStore(workdir / "risk")
+    evidence_store = EvidenceStore(placement.store_root("evidence"))
+    finding_store = FindingStore(placement.store_root("findings"))
+    risk_store = RiskAssessmentStore(placement.store_root("risk"))
     # Phase 13: the one active rule set comes from trusted code, never from
     # arguments, environment, configuration or the model.
     rule_set = active_rule_set()
     risk_engine = RiskEngine(StoreEvidenceFactsReader(evidence_store), rule_set=rule_set)
-    audit_log = FilesystemAuditLog(workdir / "audit")
+    audit_log = FilesystemAuditLog(placement.store_root("audit"))
     audit = AuditEmitter(audit_log)
 
     governor = ResourceGovernor(_limits(), clock=lambda: datetime.now(timezone.utc))
@@ -241,6 +256,7 @@ def build_runtime(
         approval_provider=approval_provider,
         target_id=LOCAL_TARGET_ID,
         approver=approval_provider.approver,
+        workdir=placement,
     )
 
 
@@ -527,7 +543,11 @@ def _parser() -> argparse.ArgumentParser:
         help="read-only: reconstruct and verify a past investigation from --workdir (no model, no execution)",
     )
     parser.add_argument("--model", default=DEFAULT_MODEL, help=f"model id (default: {DEFAULT_MODEL})")
-    parser.add_argument("--workdir", default=".chanakya", help="where evidence and the audit log are stored")
+    parser.add_argument(
+        "--workdir",
+        default=".chanakya",
+        help="where the durable stores live; always made self-excluding from Git (.gitignore) before any write",
+    )
     parser.add_argument("--approver", default=None, help="your name, recorded on approval decisions (default: OS user)")
     parser.add_argument("--require-approval", action="store_true", help="require human approval for every capability")
     parser.add_argument("--max-turns", type=int, default=DEFAULT_MAX_TURNS, help=f"turn cap (default: {DEFAULT_MAX_TURNS})")
@@ -601,6 +621,11 @@ def main(
             args.workdir, approver=approver, require_approval=args.require_approval, input_fn=input_fn, output=output
         )
         agent = AnthropicProvider(config, api_key)
+    except WorkdirPlacementError as exc:
+        # Phase 20 (T-65): the fixed code only — never the path, the OS
+        # error text, or any other value. Nothing durable was written.
+        output.write(f"error: durable workdir placement refused ({exc.code})\n")
+        return EXIT_CONFIG_ERROR
     except ProviderTransportError as exc:
         # Phase 18: the fixed code only (never a client, header or value).
         output.write(f"error: provider transport rejected ({exc.code})\n")

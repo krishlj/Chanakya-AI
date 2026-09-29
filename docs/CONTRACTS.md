@@ -1099,6 +1099,14 @@ field is free text (`rationale`, `description`, `justification`,
 those fields — and only those — are the ones called out for redaction
 handling.
 
+**Placement of durable records (Phase 20).** Where the durable records of
+these contracts are stored is an infrastructure control, not part of any
+contract: every durable store lives under a workdir that the Runtime has
+made self-excluding from Git before the first write (`docs/AGENT-RUNTIME.md`
+"Durable workdir placement confinement (Phase 20)", T-65). No contract
+shape or version changed: Evidence, AuditEvent, Finding and
+RiskAssessment are as before.
+
 ---
 
 ## Contract dependency / data-flow diagram

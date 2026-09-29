@@ -32,7 +32,7 @@ The system will initially support local security analysis and will be designed t
   Registry, and the capability/permission model. See
   `docs/PHASE-2-IMPLEMENTATION.md` for what was built, how it enforces the
   design docs, and its known limitations.
-- **Phases 3–19** (`ARCHITECTURE.md` status notes, `docs/AGENT-RUNTIME.md`):
+- **Phases 3–20** (`ARCHITECTURE.md` status notes, `docs/AGENT-RUNTIME.md`):
   the Agent Runtime and a minimal CLI (`python -m chanakya.cli
   "<objective>"`, with `--review <investigation_id>` for read-only
   reconstruction); the Anthropic provider; two read-only local-host
@@ -45,10 +45,18 @@ The system will initially support local security analysis and will be designed t
   durable before the state changes (Phase 17); and a provider transport
   isolated from the process environment, verified and recorded (Phase 18),
   with SDK debug logging checked across the whole logger hierarchy
-  (Phase 19).
+  (Phase 19); and a durable workdir that is always self-excluding from Git
+  before any investigation data is written (Phase 20).
 - **Not yet implemented**: MCP integration, remote targets,
   state-changing capabilities, recommendations, identity/authentication,
   persistence/resume, and any Web UI or API.
+
+Investigation data (objectives, Evidence, Findings, risk ratings and the
+Audit Log) is written under `--workdir` (default `.chanakya`). Chanakya
+creates a `.gitignore` there that excludes everything beneath it, and
+refuses to run if that file has been altered. Prefer a workdir outside any
+repository (for example `--workdir D:\Chanakya-Data`); the data is not
+encrypted at rest.
 
 Run the test suite with:
 ```

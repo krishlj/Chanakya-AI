@@ -2416,6 +2416,87 @@ Never includes a credential (RT-INV-11); never visible to the Agent.
 
 ---
 
+#### Durable workdir placement confinement (Phase 20)
+
+**Why (T-65).** `--workdir` defaulted to `.chanakya`, and the CLI runs from
+the repository root, so every durable store was written inside the Git
+working tree. The repository `.gitignore` did not exclude it, and the
+project checkpoint uses `git add -A`: objectives, Evidence (ports, PIDs,
+process names, platform facts), Findings, risk ratings and the Audit Log
+were all stageable.
+
+**Control (`chanakya.runtime.workdir_placement`).** One Runtime-owned
+control, run by the composition root (`build_runtime`) before any store is
+constructed. The stores receive only `DurableWorkdir.store_root(name)`;
+there is no per-store guard.
+
+1. **Resolve.** `resolve_workdir` returns the canonical absolute path:
+   relative spellings, `..`, symlinks and junctions are resolved. Raw
+   strings are never compared. After the directory is created, it is
+   resolved again; a changed result is refused (`WORKDIR_UNSTABLE`).
+2. **VCS boundary.** `detect_vcs_boundary` walks from the resolved path to
+   the filesystem root and stops at the nearest directory holding a `.git`
+   entry: a directory (ordinary repository) or a file (worktree,
+   submodule). Nested repositories resolve to the nearest one. No Git
+   command is run. A workdir inside `.git` metadata is refused
+   (`WORKDIR_INSIDE_VCS_METADATA`). The boundary is recorded on
+   `DurableWorkdir.vcs_boundary`; the exclusion does not depend on it.
+3. **Self-exclusion.** The workdir root always carries `.gitignore` with
+   exactly `CANONICAL_EXCLUSION`: three comment lines and the single rule
+   `*` (LF endings). `*` excludes every entry under the workdir, the
+   exclusion file included; Git never descends into an excluded
+   directory, and a deeper `.gitignore` takes precedence over the
+   repository's own, so nothing beneath the workdir can be re-included.
+   - *Missing:* created atomically and exclusively: the content is written
+     and fsynced to a uniquely named temporary file, then hard-linked to
+     `.gitignore` (`os.link` never replaces an existing name), and the
+     temporary name is removed. A failure is `WORKDIR_EXCLUSION_UNAVAILABLE`.
+   - *Present:* must be a plain regular file (not a symlink, junction or
+     reparse point, and not hard-linked elsewhere) whose bytes equal the
+     canonical content exactly. Anything else (empty, `!*`, partial,
+     unrelated, CRLF, BOM, trailing text, the bare rule `*`) is refused
+     (`WORKDIR_EXCLUSION_MISMATCH`). It is never overwritten, appended to
+     or repaired.
+4. **Store roots.** An existing `audit`, `evidence`, `findings` or `risk`
+   entry must be a plain directory whose resolved path is itself
+   (`WORKDIR_STORE_ROOT_UNSAFE`): a link cannot carry data outside the
+   excluded root.
+5. **Only then** are the stores constructed and the investigation run.
+
+A refusal raises `WorkdirPlacementError` with a fixed code; the CLI prints
+`error: durable workdir placement refused (<CODE>)` and exits 2. No path,
+OS error text, objective or environment value is shown, and OS exceptions
+are not chained. The only filesystem effects before a refusal are empty
+directories and, when creation succeeded, the canonical exclusion file.
+
+**Defense in depth.** The repository `.gitignore` lists `.chanakya/`. It is
+not the control: a temporary repository without it is still protected.
+
+**Review.** `--review` does not run placement. It creates no directory,
+creates or repairs no exclusion, and writes nothing, even when the
+exclusion is missing or altered.
+
+**No authority.** Placement imports only the standard library. It returns
+a safe root or refuses; it never influences a `PolicyDecision`, an
+`ApprovalDecision`, a `RiskAssessment`, target authorization or a
+permission level. No contract, AuditEvent version, capability or action
+type changed.
+
+| ID | Invariant | Tests (`tests/test_durable_workdir_placement.py`) |
+|---|---|---|
+| P20-INV-1 | No durable file under the workdir is stageable by Git (`git status`, `git add -A`). | `test_default_workdir_in_a_git_repository_is_not_stageable` (real repository, no root `.gitignore`), `test_canonical_rule_really_excludes_everything_per_git`, `test_workdir_in_a_nested_repository`, `test_git_worktree_with_a_git_file_is_recognized`, `test_link_into_a_repository_is_resolved_and_detected`, `test_parent_traversal_is_resolved_before_the_guard` |
+| P20-INV-2 | A workdir without a verified exclusion is refused before any durable file exists; the exclusion precedes every store construction and write. | `test_exclusion_is_established_before_any_store_is_built_or_written`, `test_build_runtime_runs_placement_before_any_store`, `test_failure_while_establishing_the_exclusion_creates_no_store`, `test_failure_after_placement_leaves_no_unprotected_data`, `test_store_root_link_that_escapes_the_workdir_is_refused`, `test_refusal_output_is_the_fixed_code_only` |
+| P20-INV-3 | A deleted exclusion is re-established before any write; an altered one is refused. | `test_deleted_exclusion_is_re_established_before_any_write`, `test_tampered_exclusion_is_refused_before_any_write` (10 tampers) |
+| P20-INV-4 | A pre-created weaker exclusion is refused. | `test_pre_created_weak_exclusion_is_refused` (6 contents), `test_exclusion_that_is_not_a_plain_file_is_refused`, `test_exclusion_symlink_is_refused` |
+| P20-INV-5 | `--review` creates and modifies nothing. | `test_review_creates_and_modifies_nothing`, `test_review_does_not_repair_a_missing_exclusion`, `test_review_does_not_touch_a_tampered_exclusion`, `test_review_of_a_missing_workdir_creates_nothing`, `test_review_path_never_calls_placement` |
+| P20-INV-6 | Placement has no authorization authority. | `test_placement_module_imports_nothing_with_authority`, `test_no_authority_module_imports_placement`, `test_composition_root_uses_placement_only_for_store_roots`, `test_placement_does_not_change_security_decisions` |
+
+**Not covered (residual).** `git add -f`; files already tracked in an index;
+other version-control systems; a local attacker racing the check (between
+verification and a later write, or swapping a store directory during a
+run); deleting the exclusion during a run; encryption at rest; filesystem
+permissions.
+
 ## Traceability to `docs/THREAT-MODEL.md`
 
 | Requirement | Runtime mechanism |

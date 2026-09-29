@@ -954,6 +954,11 @@ Likelihood/Impact/Risk use: **Low / Medium / High / Critical**.
   provider for analysis is a structural property of the chosen design
   (§ Decisions locked in), not something further controls eliminate; it
   is an accepted, documented tradeoff rather than an oversight.
+- **Phase 20 status**: the version-control path (durable stores staged by
+  `git add -A` and pushed to a remote repository) is MITIGATED by durable
+  workdir placement confinement (T-65). Filesystem permissions, encryption
+  at rest and other local readers are not addressed. Overall status:
+  PARTIALLY MITIGATED.
 
 ### T-23 — Supply-chain compromise via dependencies
 - **Attack path**: A malicious package (typosquat, compromised maintainer
@@ -1606,6 +1611,56 @@ boundary. **Turn records are forensic records and carry no authority.**
 - **T-22 (Phase 19 addition).** Request content no longer leaves through
   SDK/transport logging. Status unchanged: PARTIALLY MITIGATED.
 
+### Candidate threats from Phase 20 (durable investigation data placement)
+
+- **T-65: durable investigation data written into a version-controlled
+  working tree by default** (durable stores -> filesystem -> version
+  control -> remote repository; extends T-22).
+  - *Attacker / accident:* a routine `git add -A` (the project's own
+    checkpoint workflow), then a push.
+  - *Before Phase 20:* `--workdir` defaulted to `.chanakya`, and the CLI is
+    documented as run from the repository root, so the Audit Log,
+    Evidence, Findings and RiskAssessments were written inside the working
+    tree. The repository `.gitignore` did not exclude `.chanakya/`. The
+    stores hold investigation objectives, audit explanations, provider
+    identity, listening ports, PIDs, process names, OS/platform facts,
+    Findings and risk ratings; all of it became stageable.
+  - *Impact:* host reconnaissance data, objectives, findings and risk
+    information published to a remote repository.
+  - *Controls (MITIGATED; `chanakya.runtime.workdir_placement`):*
+    - the composition root (`build_runtime`) runs placement before any
+      store is constructed; stores receive only the verified root;
+    - the workdir is resolved to its canonical path (relative spellings,
+      `..`, symlinks, junctions) and its Git boundary is found by
+      filesystem inspection (`.git` directory or `.git` file: ordinary
+      repositories, worktrees, submodules, nested repositories); a workdir
+      inside `.git` metadata is refused;
+    - the workdir is always self-excluding, inside a repository or not: a
+      Runtime-owned `.gitignore` with one exact, canonical content (rule
+      `*`) is created exclusively and atomically (temporary file + hard
+      link, never overwriting), or an existing one is verified byte for
+      byte (plain regular file, not a link, not hard-linked);
+    - a weaker, altered, empty or non-regular exclusion is refused, never
+      repaired; a missing one is re-established before any write;
+    - existing store roots must be plain directories inside the workdir (a
+      link that would carry data elsewhere is refused);
+    - refusals carry a fixed code only (`WORKDIR_*`), never a path or OS
+      text;
+    - the repository `.gitignore` also lists `.chanakya/` (defense in
+      depth, not the control);
+    - `--review` stays read-only and runs none of this (P20-INV-1..6).
+  - *Residual:* not covered: `git add -f` (explicit force), files already
+    tracked in the index before Phase 20, version-control systems other
+    than Git, a local attacker racing the check (TOCTOU between
+    verification and a later write, or replacing a store subdirectory
+    during a run), deletion of the exclusion during a run, and the window
+    in which a deleted exclusion leaves earlier data unprotected until the
+    next run. Filesystem permissions, encryption at rest and backup/sync
+    tools are out of scope.
+- **T-22 (Phase 20 addition).** The version-control egress path for
+  durable data is MITIGATED (T-65). Status unchanged: PARTIALLY MITIGATED
+  (local readers, provider egress by design).
+
 ---
 
 ## 9. Security controls (consolidated)
@@ -1667,6 +1722,10 @@ assumed away:
 - **Remote approval/remote targets** (T-17, T-26) are explicitly
   unresolved until those future phases are designed with their own
   authentication/transport requirements.
+- **Durable data on the local filesystem** (T-22, T-65): Phase 20 keeps
+  it out of Git staging only. It is not encrypted at rest and not
+  protected by any Chanakya-managed permissions; `git add -f`, other
+  version-control systems and sync/backup tools are not covered.
 
 ## 11. Security requirements
 

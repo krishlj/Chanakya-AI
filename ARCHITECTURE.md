@@ -24,7 +24,9 @@ remote infrastructure without structural rework.
   the Policy Gateway.
 - **Evidence Store**: Structured filesystem storage, append-only and
   tamper-evident, no external database dependency for the local-machine
-  phase.
+  phase. Local storage is not by itself confidential: from Phase 20 the
+  durable workdir is always self-excluding from Git (see §10), but it is
+  not encrypted at rest or permission-hardened by Chanakya.
 
 ---
 
@@ -313,9 +315,34 @@ recorded as `Evidence` with full provenance (investigation id, step id,
 target, tool name/version, timestamp, parameters, content hash). Evidence
 records are never edited or deleted through normal operation. Phase 1
 implements this as structured files on the local filesystem, chosen for
-being human-inspectable and easy to version; the interface is abstract
-enough to later back onto a different storage engine without affecting
-callers.
+being human-inspectable; the interface is abstract enough to later back
+onto a different storage engine without affecting callers. Durable
+investigation data must never be placed under version control (T-65).
+
+**Status (Phase 20): durable data placement confinement.** Every durable
+store (Audit Log, Evidence, Findings, RiskAssessments) lives under one
+workdir (`--workdir`, default `.chanakya`). Before any store exists, the
+composition root runs `chanakya.runtime.workdir_placement`:
+
+1. resolve the workdir to its canonical path (relative spellings, `..`,
+   symlinks and junctions; raw strings are never compared);
+2. find the enclosing Git working-tree boundary by filesystem inspection
+   (`.git` directory or `.git` file: repositories, worktrees, submodules,
+   nested repositories); refuse a workdir inside `.git` metadata;
+3. establish the Runtime-owned `.gitignore` (exact canonical content, rule
+   `*`) exclusively and atomically, or verify an existing one byte for
+   byte; a weaker, altered or non-regular file is refused, never repaired;
+4. verify that existing store roots are plain directories in the workdir;
+5. only then construct the stores on the verified root.
+
+The exclusion is unconditional: a workdir outside any repository is
+self-excluding too. The repository's own `.gitignore` also lists
+`.chanakya/` as defense in depth. Refusals carry a fixed `WORKDIR_*` code
+only. Placement has no authority over policy, approval, risk or targets.
+`--review` stays read-only and does not run placement. Not included:
+encryption at rest, filesystem ACLs, protection against `git add -f` or
+other version-control systems. See `docs/AGENT-RUNTIME.md` "Durable
+workdir placement confinement (Phase 20)".
 
 ## 11. Risk Engine
 
