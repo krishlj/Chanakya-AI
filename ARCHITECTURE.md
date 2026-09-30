@@ -1,8 +1,8 @@
 # Chanakya AI — Architecture Specification
 
 This document is the architecture specification for Chanakya AI, written in
-Phase 0 and maintained through v1.0.0 (see "Implementation status at
-v1.0.0" below).
+Phase 0 and maintained through v1.1.0 (see "Implementation status at
+v1.1.0" below).
 It defines every layer of the system, the objects that flow between them,
 the trust and security boundaries that make safety structural rather than
 prompted, and the terminology used consistently across the project. It
@@ -32,10 +32,10 @@ remote infrastructure without structural rework.
 
 ---
 
-## Implementation status at v1.0.0
+## Implementation status at v1.1.0
 
 This document began as the Phase 0 design and is kept as the architecture of
-record. Each section's **Status** notes record what was built. At v1.0.0 the
+record. Each section's **Status** notes record what was built. At v1.1.0 the
 implemented system is:
 
 ```
@@ -53,13 +53,14 @@ User -> CLI (chanakya / python -m chanakya.cli) -> InvestigationManager
 Where the implementation differs from, or does not yet cover, the design
 below:
 
-- **Scope.** Local host only, CLI only, two read-only capabilities
-  (`observe_local_host_environment`, `list_listening_ports`). No
+- **Scope.** Local host only, CLI only, three read-only capabilities
+  (`observe_local_host_environment`, `list_listening_ports`, and
+  `http_probe_local` — an approval-gated, loopback-only HTTP probe). No
   state-changing capability, remote target, MCP server, Web GUI,
   Recommendation, or investigation resume exists.
 - **Tool Layer (section 8).** In-process handlers behind `chanakya.tools`;
   there is no MCP transport. The "MCP" wording below describes the design,
-  not v1.0.0.
+  not v1.1.0.
 - **LLM Abstraction (section 4).** `chanakya.providers` (Anthropic only).
   The provider asks for at most one tool call per turn
   (`disable_parallel_tool_use`), and the Runtime independently rejects any
@@ -277,11 +278,15 @@ parameterless and `local_host`-only. Both are wired into
 - `observe_local_host_environment` (Phase 5.1): OS/platform facts.
 - `list_listening_ports` (Phase 8): listening TCP/UDP sockets with owning
   PID and executable base name.
+- `http_probe_local` (v1.1.0): one approval-gated, bounded HTTP `GET` to a
+  service on `127.0.0.1`, returning a bounded response snapshot.
 
-Both are implemented with the standard library only. They start no
-process, use no shell and send no network traffic. Output is bounded
-and fails closed rather than being truncated. No MCP integration exists
-yet. See `docs/TOOL-REGISTRY.md` "Production capabilities".
+All three are implemented with the standard library only, and start no
+process and use no shell. The two observers send no network traffic;
+`http_probe_local` makes exactly one loopback HTTP request and can reach no
+other host. Output is bounded and fails closed rather than being truncated.
+No MCP integration exists yet. See `docs/TOOL-REGISTRY.md` "Production
+capabilities".
 
 **Status (Phase 11):** the execution envelope the Registry declares is
 enforced.
@@ -604,8 +609,8 @@ investigation review (Phase 12)".
 - **Configuration** (policy rules, tool registry definitions, target
   definitions, model settings) lives in versionable config files, treated
   as a trusted input (administrator-controlled, not agent-writable).
-  *(v1.0.0: these are defined in code, not configuration files; see
-  "Implementation status at v1.0.0".)*
+  *(v1.1.0: these are defined in code, not configuration files; see
+  "Implementation status at v1.1.0".)*
 - **Secrets** (API keys, target credentials) are never included in LLM
   context, never written to Evidence or Audit records in plaintext, and
   are held only by the Runtime/Target Adapter/Tool Layer components that
@@ -720,11 +725,11 @@ restructuring existing layers:
 
 ## High-level architecture diagram
 
-*Design-level diagram (Phase 0). At v1.0.0 the Tool Layer is in-process
+*Design-level diagram (Phase 0). At v1.1.0 the Tool Layer is in-process
 (no MCP), configuration is code-defined, and the AI Agent/Analysis roles are
 the provider plus Runtime turn validation; see "Implementation status at
-v1.0.0" for the implemented flow. The state-changing example in §19
-describes the design: no state-changing capability exists at v1.0.0.*
+v1.1.0" for the implemented flow. The state-changing example in §19
+describes the design: no state-changing capability exists at v1.1.0.*
 
 ```mermaid
 flowchart TD
@@ -795,7 +800,7 @@ flowchart TD
 
 ---
 
-## Package map (v1.0.0)
+## Package map (v1.1.0)
 
 The Phase 0 skeleton proposed `agent/`, `llm/` and `config/` packages. They
 were not created: the Agent role is the provider plus Runtime turn
@@ -814,7 +819,7 @@ chanakya/
   capability/       # Capability/permission model, execution envelope, schema validation
   targets/          # Target Manager, target registry, target/environment views
   targets/adapters/ # Target Adapters (LocalHostAdapter only)
-  tools/            # Tool Layer: ToolExecutor and the two read-only handlers
+  tools/            # Tool Layer: ToolExecutor and the three read-only handlers
   approval/         # Human Approval Mechanism (terminal)
   evidence/         # Evidence Store: append-only, hash-verified
   findings/         # Finding store (evidence-grounded model opinions)
@@ -829,7 +834,8 @@ Planned as: local host only, CLI only, a small set of clearly read-only
 capabilities, filesystem evidence store, and a synchronous CLI approval
 prompt. No state-changing tools, no multi-target support, no Web GUI.
 
-Delivered across Phases 2–20 and released as v1.0.0 with that scope. The
-read-only capabilities are `observe_local_host_environment` and
-`list_listening_ports`. The approval prompt accepts `approve`/`deny`; the
-planned optional justification was not implemented.
+Delivered across Phases 2–20 and released as v1.0.0 with that scope; v1.1.0
+added a third read-only capability, `http_probe_local`. The read-only
+capabilities are `observe_local_host_environment`, `list_listening_ports` and
+`http_probe_local`. The approval prompt accepts `approve`/`deny`; the planned
+optional justification was not implemented.

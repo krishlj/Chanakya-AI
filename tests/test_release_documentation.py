@@ -73,7 +73,7 @@ def test_readme_states_one_tool_per_turn_and_the_disclosure():
 
 
 def test_architecture_package_map_matches_the_package():
-    section = _ARCHITECTURE.split("## Package map (v1.0.0)", 1)[1].split("\n## ", 1)[0]
+    section = _ARCHITECTURE.split("## Package map (v1.1.0)", 1)[1].split("\n## ", 1)[0]
     documented = set(re.findall(r"^  ([a-z_]+)/", section, re.MULTILINE))
     actual = {p.name for p in (_REPO / "chanakya").iterdir() if p.is_dir() and (p / "__init__.py").exists()}
     assert documented == actual

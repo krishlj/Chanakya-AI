@@ -22,4 +22,4 @@ else. There is no shell or arbitrary command execution, no state-changing
 capability, no remote target and no MCP integration.
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"

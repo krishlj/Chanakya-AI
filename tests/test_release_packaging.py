@@ -79,10 +79,10 @@ def test_python_support_matches_the_dependency_stack():
     assert sys.version_info >= (3, 10)
 
 
-def test_version_has_one_source_and_is_1_0_0():
+def test_version_has_one_source_and_is_1_1_0():
     assert "version" not in _PROJECT and "version" in _PROJECT["dynamic"]
     assert _PYPROJECT["tool"]["setuptools"]["dynamic"]["version"] == {"attr": "chanakya.__version__"}
-    assert chanakya.__version__ == "1.0.0"
+    assert chanakya.__version__ == "1.1.0"
 
 
 def test_build_system_is_declared():

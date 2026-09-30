@@ -5,15 +5,16 @@ defensive** use. You give it an objective in plain language; a Claude model
 (through the Anthropic API) proposes read-only observations of the local host;
 Chanakya decides, enforces, records and verifies everything around that model.
 
-Version 1.0.0 investigates **the local host only**, with **two read-only
-capabilities**, from a command-line interface.
+Version 1.1.0 investigates **the local host only**, with **three read-only
+capabilities** (two host observers and one approval-gated local HTTP probe),
+from a command-line interface.
 
 > Use Chanakya AI only on systems you own or are authorized to investigate.
 
 ## Contents
 
 1. [Security model](#security-model)
-2. [Scope of v1.0.0](#scope-of-v100)
+2. [Scope of v1.1.0](#scope-of-v110)
 3. [Requirements](#requirements)
 4. [Installation](#installation)
 5. [API key](#api-key)
@@ -61,18 +62,19 @@ Model reply
 - **Untrusted data stays data.** Tool output reaches the model only in a
   separate data channel, never as instructions.
 
-## Scope of v1.0.0
+## Scope of v1.1.0
 
 Supported:
 
 - The local host as the only target.
-- Two read-only capabilities: `observe_local_host_environment` and
-  `list_listening_ports` (see [Capabilities](#capabilities)).
+- Three read-only capabilities: `observe_local_host_environment`,
+  `list_listening_ports` and `http_probe_local` (see
+  [Capabilities](#capabilities)).
 - Anthropic as the only model provider.
 - Terminal approval, durable evidence/findings/risk/audit records, and
   read-only review.
 
-Not supported in v1.0.0: shell or arbitrary command execution, state-changing
+Not supported in v1.1.0: shell or arbitrary command execution, state-changing
 actions, remote targets, MCP servers, running more than one tool per turn,
 remediation or recommendations, resuming an interrupted investigation, and any
 web interface or API.
@@ -83,11 +85,12 @@ web interface or API.
 - **Operating system.**
   - **Windows:** fully supported. The end-to-end release validation ran against
     the real Anthropic API on Windows 11.
-  - **Linux:** supported by both capabilities (`list_listening_ports` reads
+  - **Linux:** supported by all three capabilities (`list_listening_ports` reads
     `/proc/net`). Linux support is covered by fixture-based tests; no live
-    end-to-end run on Linux is part of the v1.0.0 validation.
+    end-to-end run on Linux is part of the v1.1.0 validation.
   - **Other platforms (for example macOS):** `list_listening_ports` refuses to
-    run (the step fails closed); `observe_local_host_environment` works.
+    run (the step fails closed); `observe_local_host_environment` and
+    `http_probe_local` work.
 - **An Anthropic API key** and direct HTTPS access to `https://api.anthropic.com`.
   HTTP proxies are not supported (see [API key](#api-key)).
 
@@ -132,10 +135,10 @@ Then, with the release's `requirements.lock`:
 
 ```
 python -m pip install --require-hashes -r requirements.lock
-python -m pip install --no-deps dist/chanakya-1.0.0-py3-none-any.whl
+python -m pip install --no-deps dist/chanakya-1.1.0-py3-none-any.whl
 ```
 
-A source distribution (`chanakya-1.0.0.tar.gz`) installs the same way and ships
+A source distribution (`chanakya-1.1.0.tar.gz`) installs the same way and ships
 both lock files.
 
 ### Check the installation
@@ -146,7 +149,7 @@ python -c "import chanakya; print(chanakya.__version__)"
 python -m pip check
 ```
 
-The version is `1.0.0`. `python -m chanakya.cli` is equivalent to `chanakya`.
+The version is `1.1.0`. `python -m chanakya.cli` is equivalent to `chanakya`.
 
 ## API key
 
@@ -315,6 +318,9 @@ Anthropic provider.** Read this before running one.
     the host;
   - the owning **process id** and **process executable name** (base name
     only).
+- `http_probe_local`: for one operator-approved HTTP `GET` to a service on
+  `127.0.0.1`, the response status line, a bounded set of response headers,
+  and a bounded snippet of the response body of that local service.
 
 They do **not** collect process arguments, environment variables, file
 contents, user data or credentials.
@@ -330,7 +336,7 @@ on each turn:
 - the screened output of the capabilities that have run in this investigation
   (the data listed above).
 
-Both v1.0.0 capabilities are registered as allowed to send their output to
+All three v1.1.0 capabilities are registered as allowed to send their output to
 the model. How Anthropic handles data it receives is governed by your
 agreement with Anthropic, not by Chanakya. Chanakya does not control retention
 or use by the provider.
@@ -355,7 +361,7 @@ approvals.
 
 ## Capabilities
 
-The complete v1.0.0 set is registered in `chanakya/registry/bootstrap.py`. No
+The complete v1.1.0 set is registered in `chanakya/registry/bootstrap.py`. No
 other capability can be requested: anything unregistered is denied by the
 Policy Gateway.
 
@@ -376,8 +382,8 @@ schema; anything else is rejected and never becomes Evidence.
 
 ## Security limitations
 
-Known and accepted for v1.0.0 (details: `docs/THREAT-MODEL.md` §8,
-"Consolidated threat register (v1.0.0)"):
+Known and accepted for v1.1.0 (unchanged since v1.0.0; details:
+`docs/THREAT-MODEL.md` §8, "Consolidated threat register (v1.0.0)"):
 
 - **Prompt injection** through host data (for example a crafted process name)
   can still steer the model's conclusions. It cannot make anything execute
@@ -414,7 +420,7 @@ example `pip-audit -r requirements.lock --require-hashes --disable-pip`).
 
 ## Documentation
 
-- `ARCHITECTURE.md`: architecture, including "Implementation status at v1.0.0"
+- `ARCHITECTURE.md`: architecture, including "Implementation status at v1.1.0"
 - `docs/THREAT-MODEL.md`: threat model and the consolidated threat register
 - `docs/AGENT-RUNTIME.md`: Runtime design and invariants
 - `docs/CONTRACTS.md`: data contracts
