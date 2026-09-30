@@ -309,7 +309,7 @@ def test_catalog_comes_from_the_registry(tmp_path):
     cli_main.run_investigation(runtime, agent, "check this host", output=out)
     assert list(agent.contexts[0].capability_catalog) == runtime.registry.catalog_view()
     assert sorted(c["capability"] for c in agent.contexts[0].capability_catalog) == [
-        "list_listening_ports", "observe_local_host_environment"]
+        "http_probe_local", "list_listening_ports", "observe_local_host_environment"]
 
 
 def test_production_components_are_real(tmp_path):

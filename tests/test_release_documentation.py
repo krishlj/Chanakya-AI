@@ -26,7 +26,7 @@ def _capabilities() -> set:
 def test_readme_capability_table_is_exactly_the_registered_set():
     section = _README.split("## Capabilities", 1)[1].split("\n## ", 1)[0]
     documented = set(re.findall(r"^\| `([a-z_]+)` \|", section, re.MULTILINE))
-    assert documented == _capabilities() == {"observe_local_host_environment", "list_listening_ports"}
+    assert documented == _capabilities() == {"observe_local_host_environment", "list_listening_ports", "http_probe_local"}
 
 
 def test_readme_documents_every_cli_option_and_no_other():

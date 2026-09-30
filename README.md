@@ -363,11 +363,16 @@ Policy Gateway.
 |---|---|---|---|---|---|---|
 | `observe_local_host_environment` | Coarse OS/platform facts through Python's standard library | read-only | local host | none | 10 s | 65,536 bytes |
 | `list_listening_ports` | Listening TCP/UDP sockets from the kernel socket tables (Linux `/proc/net`; Windows `GetExtendedTcpTable`/`GetExtendedUdpTable`) | read-only | local host | none | 15 s | 60,000 bytes |
+| `http_probe_local` | One bounded HTTP `GET` to a service on `127.0.0.1`, returning a bounded response snapshot (status, capped headers, capped body snippet) | read-only (active probe, P2) | local host (`127.0.0.1` only) | `port` (1-65535), `path` (absolute) | 5 s | 60,000 bytes |
 
-Both run with the privileges of the account running Chanakya (use a
-non-administrator account). They start no subprocess and make no network
-connection. Their output must match a closed schema; anything else is rejected
-and never becomes Evidence.
+The first two run with the privileges of the account running Chanakya (use a
+non-administrator account) and make no network connection. `http_probe_local`
+is the one active capability: it makes a single loopback HTTP request through
+the standard library `http.client`, follows no redirects, and **requires human
+approval** on every call. Its connection host is the hard-coded literal
+`127.0.0.1` — never a parameter — so no request can leave localhost. None of
+the three start a subprocess or run a shell. Every output must match a closed
+schema; anything else is rejected and never becomes Evidence.
 
 ## Security limitations
 

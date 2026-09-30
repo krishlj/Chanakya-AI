@@ -494,7 +494,7 @@ def test_production_registry_and_tool_executor_agree_exactly():
     entries = production_registry_entries()
     executor = build_tool_executor(TargetRegistry([]))
     assert {e.capability for e in entries} == set(executor.registered_capabilities)
-    assert {e.capability for e in entries} == {"observe_local_host_environment", CAP}
+    assert {e.capability for e in entries} == {"observe_local_host_environment", CAP, "http_probe_local"}
 
 
 def test_handler_output_satisfies_the_registered_output_schema():
@@ -503,10 +503,10 @@ def test_handler_output_satisfies_the_registered_output_schema():
     validate_schema(schema, build_output([]))
 
 
-def test_catalog_contains_both_production_capabilities(tmp_path):
+def test_catalog_contains_the_production_capabilities(tmp_path):
     runtime = cli_main.build_runtime(tmp_path, approver="krish", input_fn=lambda _: "deny", output=io.StringIO())
     names = [c["capability"] for c in runtime.registry.catalog_view()]
-    assert sorted(names) == ["list_listening_ports", "observe_local_host_environment"]
+    assert sorted(names) == ["http_probe_local", "list_listening_ports", "observe_local_host_environment"]
 
 
 # ===========================================================================

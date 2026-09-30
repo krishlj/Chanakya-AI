@@ -14,10 +14,12 @@ Packages: ``cli`` (entry point and composition root), ``runtime``,
 ``capability``, ``targets``, ``tools``, ``approval``, ``evidence``,
 ``findings``, ``risk``, ``audit``, ``review``.
 
-v1.0.0 scope: the local host only, two read-only capabilities
-(``observe_local_host_environment``, ``list_listening_ports``). There is no
-shell or arbitrary command execution, no state-changing capability, no
-remote target and no MCP integration.
+Scope: the local host only. Three read-only capabilities — two passive
+observers (``observe_local_host_environment``, ``list_listening_ports``) and
+one active, human-approved loopback web-security probe (``http_probe_local``),
+which sends a single bounded HTTP GET to ``127.0.0.1`` and never anywhere
+else. There is no shell or arbitrary command execution, no state-changing
+capability, no remote target and no MCP integration.
 """
 
 __version__ = "1.0.0"

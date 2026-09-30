@@ -37,6 +37,9 @@ OBSERVE_LOCAL_HOST_ENVIRONMENT_CAPABILITY = "observe_local_host_environment"
 #: Must equal chanakya.tools.handlers.listening_ports.CAPABILITY_ID.
 LIST_LISTENING_PORTS_CAPABILITY = "list_listening_ports"
 
+#: Must equal chanakya.tools.handlers.http_probe_local.CAPABILITY_ID.
+HTTP_PROBE_LOCAL_CAPABILITY = "http_probe_local"
+
 #: Phase 11: the observation keys LocalHostAdapter.collect_environment
 #: emits (asserted against the adapter in tests). A new key must be added
 #: here, or the capability's output is rejected by its envelope.
@@ -244,6 +247,124 @@ def make_list_listening_ports_entry(*, now: Optional[str] = None) -> RegistryEnt
     )
 
 
+def make_http_probe_local_entry(*, now: Optional[str] = None) -> RegistryEntry:
+    """The first active-but-read-only capability: one bounded HTTP GET to the
+    local loopback interface (``execute_readonly_probe`` -> P2), used to
+    validate a hypothesis about a locally running web application.
+
+    Unlike the two observational capabilities, this one takes bounded
+    parameters (``port`` 1-65535 and an absolute ``path``) and REQUIRES human
+    approval (``approval_requirement = REQUIRED``): even though its
+    classification is read-only, the Registry approval floor makes the Policy
+    Gateway resolve every request to ``require_approval``. The connection host
+    is a code constant (``127.0.0.1``) in the handler, never a parameter, so
+    the localhost boundary is enforced outside the model. See the approved
+    ``CHANAKYA-LOCAL-PENTEST-POC-READINESS.md`` inspection."""
+    timestamp = now if now is not None else _utcnow_iso()
+    return RegistryEntry(
+        tool_id="local-http-probe-v1",
+        contract_version="1.0.0",
+        registry_version="1.0.0",
+        capability=HTTP_PROBE_LOCAL_CAPABILITY,
+        display_name="Probe Local HTTP Service",
+        tool_version="1.0.0",
+        description=(
+            "Sends exactly one bounded HTTP GET to a service on 127.0.0.1 and returns a bounded "
+            "snapshot of the response (status line, capped headers, capped body snippet). Active "
+            "but read-only (P2). One request, one method, one fixed loopback host; follows no "
+            "redirects. No subprocess, no shell, no arbitrary request construction, and the host "
+            "is never a parameter so no request can leave localhost. Requires human approval."
+        ),
+        category="web_security_probe",
+        action_type=ActionType.EXECUTE_READONLY_PROBE,
+        operations=("http_get",),
+        # Closed: exactly a loopback port and an absolute request path. The
+        # host is NOT a parameter (it is a handler constant), so the model
+        # cannot direct the request off localhost. Upper bounds on path
+        # length and port range are re-checked in the handler (this validator
+        # supports ``minimum`` but not ``maximum``/``maxLength``).
+        parameters_schema={
+            "type": "object",
+            "properties": {
+                "port": {"type": "integer", "minimum": 1},
+                "path": {"type": "string"},
+            },
+            "required": ["port", "path"],
+            "additionalProperties": False,
+        },
+        # Closed output schema (Phase 11 D-2). Describes exactly what
+        # HttpProbeLocalHandler returns.
+        output_schema={
+            "type": "object",
+            "properties": {
+                "host": {"type": "string"},
+                "port": {"type": "integer", "minimum": 1},
+                "path": {"type": "string"},
+                "status_code": {"type": "integer", "minimum": 0},
+                "reason": {"type": "string"},
+                "headers": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {"name": {"type": "string"}, "value": {"type": "string"}},
+                        "required": ["name", "value"],
+                        "additionalProperties": False,
+                    },
+                },
+                "body_snippet": {"type": "string"},
+                "body_snippet_bytes": {"type": "integer", "minimum": 0},
+                "body_truncated": {"type": "boolean"},
+            },
+            "required": [
+                "host",
+                "port",
+                "path",
+                "status_code",
+                "reason",
+                "headers",
+                "body_snippet",
+                "body_snippet_bytes",
+                "body_truncated",
+            ],
+            "additionalProperties": False,
+        },
+        default_risk_category=RiskCategory.LOW,
+        classification=Classification.READ_ONLY,
+        required_privileges=RequiredPrivileges(
+            os_privilege=OSPrivilege.STANDARD_USER, target_access=TargetAccess.TARGET_READ
+        ),
+        supported_target_types=("local_host",),
+        default_timeout_seconds=5,
+        resource_limits=ResourceLimits(
+            max_output_bytes=60000, max_cpu_seconds=5, max_memory_mb=64, max_concurrent_invocations=2
+        ),
+        approval_requirement=ApprovalRequirement.REQUIRED,
+        provenance=Provenance(
+            source_type="core",
+            source_identifier="chanakya.tools.handlers.http_probe_local.HttpProbeLocalHandler",
+            source_version="1.0.0",
+            implementation_hash="local-pentest-poc",
+            vetted_by="local-pentest-poc-design-review",
+            vetted_at=timestamp,
+            self_declared_metadata={},
+            review_notes=(
+                "First active read-only probe (P2). Stdlib http.client GET to a hard-coded 127.0.0.1; "
+                "bounded parameters and output; no redirects, no subprocess, no shell; host is not a "
+                "parameter so the request cannot leave localhost. Human approval required."
+            ),
+        ),
+        trust_level=TrustLevel.FIRST_PARTY_ADAPTER,
+        status=Status.ENABLED,
+        created_at=timestamp,
+        updated_at=timestamp,
+        owner="chanakya-core",
+        # The response is untrusted target content shown to the model for
+        # analysis; the Runtime wraps it as UntrustedData (as with every
+        # other tool result).
+        model_egress=ModelEgress.ALLOWED,
+    )
+
+
 def production_registry_entries(*, now: Optional[str] = None) -> Tuple[RegistryEntry, ...]:
     """Every production capability, for a composition root to register.
     Must stay in step with ``chanakya.tools.bootstrap.build_tool_executor``.
@@ -251,7 +372,11 @@ def production_registry_entries(*, now: Optional[str] = None) -> Tuple[RegistryE
     Phase 11 (D-2): every production output schema must be closed
     (``find_open_schema_violations``); an open one fails here, at
     composition, before anything can run under it."""
-    entries = (make_observe_local_host_environment_entry(now=now), make_list_listening_ports_entry(now=now))
+    entries = (
+        make_observe_local_host_environment_entry(now=now),
+        make_list_listening_ports_entry(now=now),
+        make_http_probe_local_entry(now=now),
+    )
     for entry in entries:
         if find_open_schema_violations(entry.output_schema):
             raise ValueError(f"production capability {entry.capability!r} does not declare a closed output schema")
