@@ -52,7 +52,7 @@ python -m chanakya.cli "On this machine I run a local OWASP Juice Shop training 
 Investigation ID:
 
 ``` text
-cb4da3c7-6ff4-4b73-8740-170a5855503b
+cb4da3c7-6ff6-4b73-8740-170a5855503b
 ```
 
 Result:

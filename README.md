@@ -13,22 +13,156 @@ from a command-line interface.
 
 ## Contents
 
-1. [Security model](#security-model)
-2. [Scope of v1.1.0](#scope-of-v110)
-3. [Requirements](#requirements)
-4. [Installation](#installation)
-5. [API key](#api-key)
-6. [Command-line usage](#command-line-usage)
-7. [A safe first investigation](#a-safe-first-investigation)
-8. [Human approval](#human-approval)
-9. [Reviewing an investigation](#reviewing-an-investigation)
-10. [Where data is stored](#where-data-is-stored)
-11. [Operator data disclosure](#operator-data-disclosure)
-12. [Capabilities](#capabilities)
-13. [Security limitations](#security-limitations)
-14. [Development and testing](#development-and-testing)
-15. [Documentation](#documentation)
-16. [License](#license)
+1. [Chanakya AI in Action](#chanakya-ai-in-action)
+2. [Why this matters](#why-this-matters)
+3. [Public vs private investigation data](#public-vs-private-investigation-data)
+4. [Architecture](#architecture)
+5. [Security model](#security-model)
+6. [Evidence and auditability](#evidence-and-auditability)
+7. [Capabilities](#capabilities)
+8. [Scope of v1.1.0](#scope-of-v110)
+9. [Project evolution](#project-evolution)
+10. [Documentation](#documentation)
+11. [Requirements](#requirements)
+12. [Installation](#installation)
+13. [API key](#api-key)
+14. [Command-line usage](#command-line-usage)
+15. [A safe first investigation](#a-safe-first-investigation)
+16. [Human approval](#human-approval)
+17. [Operator data disclosure](#operator-data-disclosure)
+18. [Development and testing](#development-and-testing)
+19. [Security limitations](#security-limitations)
+20. [License](#license)
+
+## Chanakya AI in Action
+
+Two real investigations run with Chanakya AI v1.1.0 against the real
+Anthropic API.
+
+### 1. Local Host Security Investigation
+
+> Chanakya AI performed a read-only investigation of a Windows host,
+> discovering platform information and listening services while producing
+> evidence, findings, deterministic risk assessments, and a durable audit
+> trail.
+
+| | |
+|---|---|
+| **Target** | The local Windows 11 host (`local-host`) |
+| **Capabilities** | `observe_local_host_environment`, `list_listening_ports` |
+| **Control** | `--require-approval`: both capabilities approved by the operator, one per model turn |
+| **Observed** | Platform facts; SMB/RPC/NetBIOS listeners beyond loopback; a Docker-published TCP 3000; UDP name-resolution and discovery protocols; global IPv6 listeners |
+| **Results** | 2 Evidence records · 8 Findings · 8 rule-based risk assessments (3 medium, 2 low, 3 informational) · 38 hash-chained audit records |
+| **Review** | `completed`, audit chain verified, consistent, 0 anomalies |
+
+**Read the case study:** [docs/LOCAL-HOST-SECURITY-INVESTIGATION.md](docs/LOCAL-HOST-SECURITY-INVESTIGATION.md)
+
+> *Sanitized portfolio report — raw host data is intentionally excluded.*
+
+### 2. Local Web Security Investigation
+
+> Chanakya AI investigated a locally hosted OWASP Juice Shop instance,
+> collected HTTP evidence, identified a wildcard CORS configuration, and
+> supported a manually performed remediation.
+
+| | |
+|---|---|
+| **Target** | OWASP Juice Shop training instance on `127.0.0.1:3000` |
+| **Capability** | `http_probe_local` (one benign, approval-gated HTTP `GET` per run) |
+| **Observed** | **Wildcard CORS configuration identified** (`Access-Control-Allow-Origin: *`) |
+| **Remediation** | Performed **manually by the operator** in the Juice Shop source (explicit local-origin allowlist). Chanakya v1.1.0 does not modify code. |
+| **Verification boundary** | BEFORE state confirmed with evidence. AFTER runtime verification was **not completed**: the remediated Docker image/container was not successfully built and started. |
+
+The CORS observation is a configuration finding, not a confirmed exploitable
+vulnerability; exploitability depends on application-specific conditions that
+were not tested.
+
+**Read the case study:** [docs/LOCAL-WEB-SECURITY-ASSESSMENT-JUICE-SHOP.md](docs/LOCAL-WEB-SECURITY-ASSESSMENT-JUICE-SHOP.md)
+
+## Why this matters
+
+Chanakya AI is not an LLM that receives unrestricted host access and executes
+commands. The model only proposes; everything else is deterministic code that
+decides, enforces and records. The v1.1.0 workflow is:
+
+```
+Objective
+   ↓
+Model proposes
+   ↓
+Runtime validates
+   ↓
+Policy Gateway controls
+   ↓
+Registered capability executes
+   ↓
+Output is screened
+   ↓
+Evidence is recorded
+   ↓
+Findings cite evidence
+   ↓
+Risk is calculated deterministically
+   ↓
+Audit trail is recorded
+   ↓
+Review verifies the investigation
+```
+
+The **local-host case study** demonstrates this architecture against real host
+observations. The **Juice Shop case study** demonstrates the same architecture
+against a controlled local web application.
+
+## Public vs private investigation data
+
+Investigations collect sensitive, environment-specific data (see
+[Operator data disclosure](#operator-data-disclosure)). This repository only
+ever contains the public half.
+
+| Public (in this repository) | Private (never in this repository) |
+|---|---|
+| Sanitized case studies | The raw investigation workdir |
+| Architecture and methodology | Raw Evidence records and payloads |
+| Capabilities and security controls | Complete audit records |
+| Anonymized evidence and record examples | Actual hostnames |
+| Investigation workflow | Actual IP addresses |
+| Lessons learned | Process ids (PIDs) |
+| | Detailed local socket inventories |
+| | Environment-specific process information |
+
+**Keep raw investigation data outside the Git repository.** The project
+convention is a dedicated directory such as `D:\Chanakya-Data` on Windows (or
+`~/chanakya-data` on Linux), passed with `--workdir`. Chanakya also writes a
+`.gitignore` into every workdir as defence in depth, but that does not protect
+against `git add -f`, other version-control systems, or backup/sync tools.
+
+When publishing a case study, summarize rather than copy: replace host-specific
+values with neutral labels such as `[HOSTNAME REDACTED]`,
+`[IP ADDRESS REDACTED]`, `[PID REDACTED]`, `[PROCESS NAME REDACTED]` and
+`[EVIDENCE-ID-REDACTED]`, never with made-up values, and do not publish
+screenshots that show any of them.
+
+## Architecture
+
+Chanakya is a layered system in which safety is structural rather than
+prompted. The model sits behind an LLM abstraction and a custom agent loop; it
+never dispatches tools itself.
+
+| Layer | Role |
+|---|---|
+| CLI | Accepts the objective, prompts for approval, runs read-only review |
+| Agent Runtime | Owns the investigation loop, turn validation, budgets and terminal records |
+| LLM abstraction / Anthropic provider | Fixed endpoint, isolated transport, hashed requests, one tool call per turn |
+| Target Manager | Resolves `local-host`; rejects anything out of scope |
+| Policy Gateway | The only allow / deny / require_approval authority |
+| Security Tool Registry | The closed set of registered capabilities and their envelopes |
+| Tool Layer | Read-only local handlers with schema-checked output |
+| Evidence Store | Hashed, append-only tool output |
+| Findings / Risk Engine | Evidence-cited findings; deterministic, versioned risk rules |
+| Audit Log | Durable, hash-chained record of every decision |
+
+The full specification, including trust boundaries, data flow and the
+package map, is in [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ## Security model
 
@@ -62,6 +196,73 @@ Model reply
 - **Untrusted data stays data.** Tool output reaches the model only in a
   separate data channel, never as instructions.
 
+## Evidence and auditability
+
+Every capability output becomes a hashed, append-only Evidence record; every
+finding must cite Evidence from the same investigation; every risk rating is
+computed by versioned rules; and every step is written to a hash-chained
+audit log that can be verified later without calling the model.
+
+### Reviewing an investigation
+
+```
+chanakya --review INVESTIGATION_ID --workdir D:\Chanakya-Data
+```
+
+Review reads the durable records and verifies them:
+
+- the audit hash chain;
+- the consistency of requests, policy decisions, approvals, dispatches and
+  model turns;
+- Evidence integrity and screening;
+- that every finding cites evidence;
+- that every risk rating recomputes under its recorded rule set.
+
+It reports `status`, `audit chain`, `consistency` and any anomalies. Review is
+read-only: it reads no API key, calls no model, runs no tool and creates no
+files. It exits 0 only when the record is verified and consistent.
+
+### Where data is stored
+
+Everything durable is written under `--workdir`:
+
+| Path | Contents |
+|---|---|
+| `audit/<investigation_id>/` | Hash-chained audit log: objective, submitter, each model turn's context manifest and outcome (including the model's explanation text when it passes screening), proposed capability and parameters, policy decisions, approvals, dispatches, provider identity and request hashes |
+| `evidence/<investigation_id>/` | Evidence records and their full tool-output payloads |
+| `findings/<investigation_id>/` | Findings (model-written text and cited evidence ids) |
+| `risk/<investigation_id>/` | Rule-based risk assessments |
+| `.gitignore` | Created by Chanakya; excludes everything in the workdir from Git |
+
+- Chanakya creates that `.gitignore` before writing anything and refuses to
+  run if it has been altered. This protects against `git add`, not against
+  `git add -f`, other version-control systems, or backup/sync tools.
+- The data is **not encrypted** and Chanakya does not change file permissions.
+  Protect the workdir as you would any sensitive host inventory.
+- Records are append-only. Chanakya never edits or deletes them; delete an
+  investigation's directories yourself when you no longer need them.
+
+## Capabilities
+
+The complete v1.1.0 set is registered in `chanakya/registry/bootstrap.py`. No
+other capability can be requested: anything unregistered is denied by the
+Policy Gateway.
+
+| Capability | What it does | Class | Target | Parameters | Timeout | Max output |
+|---|---|---|---|---|---|---|
+| `observe_local_host_environment` | Coarse OS/platform facts through Python's standard library | read-only | local host | none | 10 s | 65,536 bytes |
+| `list_listening_ports` | Listening TCP/UDP sockets from the kernel socket tables (Linux `/proc/net`; Windows `GetExtendedTcpTable`/`GetExtendedUdpTable`) | read-only | local host | none | 15 s | 60,000 bytes |
+| `http_probe_local` | One bounded HTTP `GET` to a service on `127.0.0.1`, returning a bounded response snapshot (status, capped headers, capped body snippet) | read-only (active probe, P2) | local host (`127.0.0.1` only) | `port` (1-65535), `path` (absolute) | 5 s | 60,000 bytes |
+
+The first two run with the privileges of the account running Chanakya (use a
+non-administrator account) and make no network connection. `http_probe_local`
+is the one active capability: it makes a single loopback HTTP request through
+the standard library `http.client`, follows no redirects, and **requires human
+approval** on every call. Its connection host is the hard-coded literal
+`127.0.0.1` — never a parameter — so no request can leave localhost. None of
+the three start a subprocess or run a shell. Every output must match a closed
+schema; anything else is rejected and never becomes Evidence.
+
 ## Scope of v1.1.0
 
 Supported:
@@ -78,6 +279,64 @@ Not supported in v1.1.0: shell or arbitrary command execution, state-changing
 actions, remote targets, MCP servers, running more than one tool per turn,
 remediation or recommendations, resuming an interrupted investigation, and any
 web interface or API.
+
+## Project evolution
+
+Chanakya was built in small, tagged phases, each adding one control or
+capability and its tests.
+
+| Release / tag | Milestone |
+|---|---|
+| `v0.1-foundation` | Architecture, contracts and threat model |
+| `v0.2` – `v0.4` | Security control plane, Agent Runtime, target and environment intelligence |
+| `v0.5.x` | Tool layer, Evidence contract and store, payload integrity, Anthropic provider and transport hardening, target-aware context |
+| `v0.6.0` – `v0.7.0` | Durable audit log; human approval and CLI |
+| `v0.8.0` | `list_listening_ports` capability |
+| `v0.9.0` – `v0.10.0` | Evidence-grounded findings; deterministic risk assessment |
+| `v0.11.0` – `v0.14.0` | Capability execution envelope, authorization record and review, versioned risk rules, durable agent-turn records |
+| `v0.15.0` – `v0.20.0` | Tool-output screening and egress control, failure-path output control, provider environment isolation, egress logging, workdir confinement |
+| **`v1.0.0`** | First release: local host investigation with two read-only capabilities |
+| **`v1.1.0`** | Controlled local web security: approval-gated `http_probe_local`, local XSS training lab |
+
+Release validation and audit reports are listed under
+[Documentation](#documentation).
+
+## Documentation
+
+**Case studies**
+
+- [`docs/LOCAL-HOST-SECURITY-INVESTIGATION.md`](docs/LOCAL-HOST-SECURITY-INVESTIGATION.md):
+  read-only Windows host investigation (sanitized)
+- [`docs/LOCAL-WEB-SECURITY-ASSESSMENT-JUICE-SHOP.md`](docs/LOCAL-WEB-SECURITY-ASSESSMENT-JUICE-SHOP.md):
+  OWASP Juice Shop investigation, wildcard CORS observation and manual
+  remediation
+
+**Architecture and design**
+
+- [`ARCHITECTURE.md`](ARCHITECTURE.md): architecture, including
+  "Implementation status at v1.1.0"
+- [`docs/THREAT-MODEL.md`](docs/THREAT-MODEL.md): threat model and the
+  consolidated threat register
+- [`docs/AGENT-RUNTIME.md`](docs/AGENT-RUNTIME.md): Runtime design and
+  invariants
+- [`docs/CONTRACTS.md`](docs/CONTRACTS.md): data contracts
+- [`docs/POLICY-GATEWAY.md`](docs/POLICY-GATEWAY.md),
+  [`docs/TOOL-REGISTRY.md`](docs/TOOL-REGISTRY.md),
+  [`docs/CAPABILITY-PERMISSION-MODEL.md`](docs/CAPABILITY-PERMISSION-MODEL.md),
+  [`docs/TARGET-MANAGER.md`](docs/TARGET-MANAGER.md),
+  [`docs/TARGET-AWARE-AGENT-CONTEXT.md`](docs/TARGET-AWARE-AGENT-CONTEXT.md):
+  component designs
+
+**Release validation and engineering reports**
+
+- [`FINAL-V1.0.0-RELEASE-REPORT.md`](FINAL-V1.0.0-RELEASE-REPORT.md),
+  [`FINAL-RELEASE-VALIDATION-REPORT.md`](FINAL-RELEASE-VALIDATION-REPORT.md),
+  [`FINAL-SECURITY-AUDIT-REPORT.md`](FINAL-SECURITY-AUDIT-REPORT.md)
+- [`RELEASE-PREP-V1.1.0-REPORT.md`](RELEASE-PREP-V1.1.0-REPORT.md),
+  [`RELEASE-READINESS-v1.1.0-REPORT.md`](RELEASE-READINESS-v1.1.0-REPORT.md)
+- [`CHANAKYA-LOCAL-PENTEST-POC-READINESS.md`](CHANAKYA-LOCAL-PENTEST-POC-READINESS.md),
+  [`CHANAKYA-LOCAL-PENTEST-POC-IMPLEMENTATION-REPORT.md`](CHANAKYA-LOCAL-PENTEST-POC-IMPLEMENTATION-REPORT.md),
+  [`LOCAL-XSS-LAB-REPORT.md`](LOCAL-XSS-LAB-REPORT.md)
 
 ## Requirements
 
@@ -259,45 +518,6 @@ At each prompt:
   pipes input into it) answers the prompt. The approver name is not
   authenticated.
 
-## Reviewing an investigation
-
-```
-chanakya --review INVESTIGATION_ID --workdir D:\Chanakya-Data
-```
-
-Review reads the durable records and verifies them:
-
-- the audit hash chain;
-- the consistency of requests, policy decisions, approvals, dispatches and
-  model turns;
-- Evidence integrity and screening;
-- that every finding cites evidence;
-- that every risk rating recomputes under its recorded rule set.
-
-It reports `status`, `audit chain`, `consistency` and any anomalies. Review is
-read-only: it reads no API key, calls no model, runs no tool and creates no
-files. It exits 0 only when the record is verified and consistent.
-
-## Where data is stored
-
-Everything durable is written under `--workdir`:
-
-| Path | Contents |
-|---|---|
-| `audit/<investigation_id>/` | Hash-chained audit log: objective, submitter, each model turn's context manifest and outcome (including the model's explanation text when it passes screening), proposed capability and parameters, policy decisions, approvals, dispatches, provider identity and request hashes |
-| `evidence/<investigation_id>/` | Evidence records and their full tool-output payloads |
-| `findings/<investigation_id>/` | Findings (model-written text and cited evidence ids) |
-| `risk/<investigation_id>/` | Rule-based risk assessments |
-| `.gitignore` | Created by Chanakya; excludes everything in the workdir from Git |
-
-- Chanakya creates that `.gitignore` before writing anything and refuses to
-  run if it has been altered. This protects against `git add`, not against
-  `git add -f`, other version-control systems, or backup/sync tools.
-- The data is **not encrypted** and Chanakya does not change file permissions.
-  Protect the workdir as you would any sensitive host inventory.
-- Records are append-only. Chanakya never edits or deletes them; delete an
-  investigation's directories yourself when you no longer need them.
-
 ## Operator data disclosure
 
 **An investigation sends information about this host to the configured
@@ -359,26 +579,21 @@ approvals.
   it does not classify other sensitive data (such as hostnames or IP
   addresses, which are sent by design).
 
-## Capabilities
+## Development and testing
 
-The complete v1.1.0 set is registered in `chanakya/registry/bootstrap.py`. No
-other capability can be requested: anything unregistered is denied by the
-Policy Gateway.
+From a source checkout, in a virtual environment:
 
-| Capability | What it does | Class | Target | Parameters | Timeout | Max output |
-|---|---|---|---|---|---|---|
-| `observe_local_host_environment` | Coarse OS/platform facts through Python's standard library | read-only | local host | none | 10 s | 65,536 bytes |
-| `list_listening_ports` | Listening TCP/UDP sockets from the kernel socket tables (Linux `/proc/net`; Windows `GetExtendedTcpTable`/`GetExtendedUdpTable`) | read-only | local host | none | 15 s | 60,000 bytes |
-| `http_probe_local` | One bounded HTTP `GET` to a service on `127.0.0.1`, returning a bounded response snapshot (status, capped headers, capped body snippet) | read-only (active probe, P2) | local host (`127.0.0.1` only) | `port` (1-65535), `path` (absolute) | 5 s | 60,000 bytes |
+```
+python -m pip install --require-hashes -r requirements-test.lock
+python -m pip install --no-deps -e .
+python -m pytest -q
+python -m pytest -q -W error
+```
 
-The first two run with the privileges of the account running Chanakya (use a
-non-administrator account) and make no network connection. `http_probe_local`
-is the one active capability: it makes a single loopback HTTP request through
-the standard library `http.client`, follows no redirects, and **requires human
-approval** on every call. Its connection host is the hard-coded literal
-`127.0.0.1` — never a parameter — so no request can leave localhost. None of
-the three start a subprocess or run a shell. Every output must match a closed
-schema; anything else is rejected and never becomes Evidence.
+The suite must pass with no failures, skips or warnings. To change a
+dependency, regenerate the locks as described at the top of
+`requirements.lock`, then re-run the full suite and a vulnerability scan (for
+example `pip-audit -r requirements.lock --require-hashes --disable-pip`).
 
 ## Security limitations
 
@@ -401,32 +616,6 @@ Known and accepted for v1.1.0 (unchanged since v1.0.0; details:
   capabilities are bounded and make no blocking calls (T-36).
 - **Workdir data is not encrypted at rest** (T-22, T-65).
 - **A compromised host** is out of scope (T-25).
-
-## Development and testing
-
-From a source checkout, in a virtual environment:
-
-```
-python -m pip install --require-hashes -r requirements-test.lock
-python -m pip install --no-deps -e .
-python -m pytest -q
-python -m pytest -q -W error
-```
-
-The suite must pass with no failures, skips or warnings. To change a
-dependency, regenerate the locks as described at the top of
-`requirements.lock`, then re-run the full suite and a vulnerability scan (for
-example `pip-audit -r requirements.lock --require-hashes --disable-pip`).
-
-## Documentation
-
-- `ARCHITECTURE.md`: architecture, including "Implementation status at v1.1.0"
-- `docs/THREAT-MODEL.md`: threat model and the consolidated threat register
-- `docs/AGENT-RUNTIME.md`: Runtime design and invariants
-- `docs/CONTRACTS.md`: data contracts
-- `docs/POLICY-GATEWAY.md`, `docs/TOOL-REGISTRY.md`,
-  `docs/CAPABILITY-PERMISSION-MODEL.md`, `docs/TARGET-MANAGER.md`,
-  `docs/TARGET-AWARE-AGENT-CONTEXT.md`: component designs
 
 ## License
 
