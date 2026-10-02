@@ -365,7 +365,7 @@ For that reason:
   convention is a dedicated directory such as `D:\Chanakya-Data` on
   Windows or `~/chanakya-data` on Linux.
 
-See [Public vs private investigation data](../README.md#public-vs-private-investigation-data)
+See [Public vs private investigation data](../../README.md#public-vs-private-investigation-data)
 in the README.
 
 ## 10. Limitations

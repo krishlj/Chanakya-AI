@@ -6,3 +6,7 @@ __pycache__/
 # Phase 20 (T-65) defense in depth: the default durable workdir. The
 # authoritative control is the Runtime-owned .gitignore inside the workdir.
 .chanakya/
+
+# Generated Python build output (setuptools / pip wheel).
+build/
+dist/

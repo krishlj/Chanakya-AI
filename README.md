@@ -11,6 +11,13 @@ from a command-line interface.
 
 > Use Chanakya AI only on systems you own or are authorized to investigate.
 
+**Quick links:** [Chanakya AI in Action](#chanakya-ai-in-action) ·
+[Case studies](docs/README.md#case-studies) ·
+[Architecture](#architecture) ·
+[Documentation](docs/README.md) ·
+[Installation](#installation) ·
+[Development](#development-and-testing)
+
 ## Contents
 
 1. [Chanakya AI in Action](#chanakya-ai-in-action)
@@ -55,7 +62,7 @@ Anthropic API.
 | **Results** | 2 Evidence records · 8 Findings · 8 rule-based risk assessments (3 medium, 2 low, 3 informational) · 38 hash-chained audit records |
 | **Review** | `completed`, audit chain verified, consistent, 0 anomalies |
 
-**Read the case study:** [docs/LOCAL-HOST-SECURITY-INVESTIGATION.md](docs/LOCAL-HOST-SECURITY-INVESTIGATION.md)
+**Read the case study:** [docs/case-studies/LOCAL-HOST-SECURITY-INVESTIGATION.md](docs/case-studies/LOCAL-HOST-SECURITY-INVESTIGATION.md)
 
 > *Sanitized portfolio report — raw host data is intentionally excluded.*
 
@@ -77,7 +84,7 @@ The CORS observation is a configuration finding, not a confirmed exploitable
 vulnerability; exploitability depends on application-specific conditions that
 were not tested.
 
-**Read the case study:** [docs/LOCAL-WEB-SECURITY-ASSESSMENT-JUICE-SHOP.md](docs/LOCAL-WEB-SECURITY-ASSESSMENT-JUICE-SHOP.md)
+**Read the case study:** [docs/case-studies/LOCAL-WEB-SECURITY-ASSESSMENT-JUICE-SHOP.md](docs/case-studies/LOCAL-WEB-SECURITY-ASSESSMENT-JUICE-SHOP.md)
 
 ## Why this matters
 
@@ -298,45 +305,25 @@ capability and its tests.
 | **`v1.0.0`** | First release: local host investigation with two read-only capabilities |
 | **`v1.1.0`** | Controlled local web security: approval-gated `http_probe_local`, local XSS training lab |
 
-Release validation and audit reports are listed under
-[Documentation](#documentation).
+Release validation, audit and engineering reports are indexed in
+[`docs/README.md`](docs/README.md).
 
 ## Documentation
 
-**Case studies**
+The full documentation index is **[`docs/README.md`](docs/README.md)**: case
+studies, design specifications, release and validation reports, engineering
+reports and labs.
 
-- [`docs/LOCAL-HOST-SECURITY-INVESTIGATION.md`](docs/LOCAL-HOST-SECURITY-INVESTIGATION.md):
-  read-only Windows host investigation (sanitized)
-- [`docs/LOCAL-WEB-SECURITY-ASSESSMENT-JUICE-SHOP.md`](docs/LOCAL-WEB-SECURITY-ASSESSMENT-JUICE-SHOP.md):
-  OWASP Juice Shop investigation, wildcard CORS observation and manual
-  remediation
+Start here:
 
-**Architecture and design**
-
+- [Local Host Security Investigation](docs/case-studies/LOCAL-HOST-SECURITY-INVESTIGATION.md)
+  (sanitized case study)
+- [Local Web Security Assessment: OWASP Juice Shop](docs/case-studies/LOCAL-WEB-SECURITY-ASSESSMENT-JUICE-SHOP.md)
+  (case study)
 - [`ARCHITECTURE.md`](ARCHITECTURE.md): architecture, including
   "Implementation status at v1.1.0"
 - [`docs/THREAT-MODEL.md`](docs/THREAT-MODEL.md): threat model and the
   consolidated threat register
-- [`docs/AGENT-RUNTIME.md`](docs/AGENT-RUNTIME.md): Runtime design and
-  invariants
-- [`docs/CONTRACTS.md`](docs/CONTRACTS.md): data contracts
-- [`docs/POLICY-GATEWAY.md`](docs/POLICY-GATEWAY.md),
-  [`docs/TOOL-REGISTRY.md`](docs/TOOL-REGISTRY.md),
-  [`docs/CAPABILITY-PERMISSION-MODEL.md`](docs/CAPABILITY-PERMISSION-MODEL.md),
-  [`docs/TARGET-MANAGER.md`](docs/TARGET-MANAGER.md),
-  [`docs/TARGET-AWARE-AGENT-CONTEXT.md`](docs/TARGET-AWARE-AGENT-CONTEXT.md):
-  component designs
-
-**Release validation and engineering reports**
-
-- [`FINAL-V1.0.0-RELEASE-REPORT.md`](FINAL-V1.0.0-RELEASE-REPORT.md),
-  [`FINAL-RELEASE-VALIDATION-REPORT.md`](FINAL-RELEASE-VALIDATION-REPORT.md),
-  [`FINAL-SECURITY-AUDIT-REPORT.md`](FINAL-SECURITY-AUDIT-REPORT.md)
-- [`RELEASE-PREP-V1.1.0-REPORT.md`](RELEASE-PREP-V1.1.0-REPORT.md),
-  [`RELEASE-READINESS-v1.1.0-REPORT.md`](RELEASE-READINESS-v1.1.0-REPORT.md)
-- [`CHANAKYA-LOCAL-PENTEST-POC-READINESS.md`](CHANAKYA-LOCAL-PENTEST-POC-READINESS.md),
-  [`CHANAKYA-LOCAL-PENTEST-POC-IMPLEMENTATION-REPORT.md`](CHANAKYA-LOCAL-PENTEST-POC-IMPLEMENTATION-REPORT.md),
-  [`LOCAL-XSS-LAB-REPORT.md`](LOCAL-XSS-LAB-REPORT.md)
 
 ## Requirements
 
