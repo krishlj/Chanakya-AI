@@ -32,6 +32,7 @@ Real investigations run with Chanakya AI v1.1.0.
 - [Target-aware agent context](TARGET-AWARE-AGENT-CONTEXT.md)
 - [Phase 2 implementation](PHASE-2-IMPLEMENTATION.md) and
   [Phase 10 readiness](PHASE-10-READINESS.md) (historical design notes)
+- [Tikos Cyber Profiler injection screen (design proposal)](TIKOS-CYBER-PROFILER.md)
 
 ## Release & Validation
 
